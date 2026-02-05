@@ -1,0 +1,9 @@
+# Масштаб и отображение
+[client]
+# Стабильное отображение на разных экранах
+toolbarMode = "auto"
+
+[browser]
+gatherUsageStats = false
+
+# Широкий layout уже задан в app.py через set_page_config(layout="wide")

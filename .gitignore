@@ -1,0 +1,37 @@
+# Секреты и ключи (не коммитить)
+.streamlit/secrets.toml
+credentials.json
+.env
+*.env.local
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE и ОС
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Временные и логи
+*.log
+*.tmp
+.cache/
+
+# Документация (не хранить в репозитории)
+*.md
