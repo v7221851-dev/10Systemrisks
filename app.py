@@ -44,11 +44,31 @@ except (AttributeError, FileNotFoundError, Exception):
     GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
     GIGACHAT_API_KEY = ""
 
+_google_creds_path_cache = None
+
+def _get_google_credentials_path():
+    """Путь к credentials: из секрета (Streamlit Cloud) или файл credentials.json."""
+    global _google_creds_path_cache
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    if _google_creds_path_cache is not None:
+        return _google_creds_path_cache, scope
+    try:
+        raw = (st.secrets.get("GOOGLE_CREDENTIALS_JSON") or "").strip()
+        if raw:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                f.write(raw)
+                _google_creds_path_cache = f.name
+            return _google_creds_path_cache, scope
+    except Exception:
+        pass
+    _google_creds_path_cache = "credentials.json"
+    return _google_creds_path_cache, scope
+
 @st.cache_data(ttl=5)
 def get_data():
     SPREADSHEET_ID = "1kvlW3ko5yvhE6yInw-xER-NEKXT2UNze7BIR-I-yOfQ"
-    CREDENTIALS_FILE = "credentials.json"
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    CREDENTIALS_FILE, scope = _get_google_credentials_path()
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
         client = gspread.authorize(creds)

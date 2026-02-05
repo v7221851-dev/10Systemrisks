@@ -1,0 +1,66 @@
+═══════════════════════════════════════════════════════════════
+  ДЕПЛОЙ НА STREAMLIT COMMUNITY CLOUD
+═══════════════════════════════════════════════════════════════
+
+Ссылка: https://share.streamlit.io
+
+───────────────────────────────────────────────────────────────
+ШАГ 1. Войти и создать приложение
+───────────────────────────────────────────────────────────────
+1. Откройте https://share.streamlit.io
+2. Войдите через GitHub (Sign in with GitHub).
+3. Нажмите "New app".
+4. Укажите:
+   - Repository: v7221851-dev/10SystemRisks  (или ваш репо)
+   - Branch: main
+   - Main file path: app.py
+5. Нажмите "Advanced settings".
+
+───────────────────────────────────────────────────────────────
+ШАГ 2. Секреты (Secrets)
+───────────────────────────────────────────────────────────────
+В поле "Secrets" вставьте настройки в формате TOML.
+
+Обязательно для работы с данными (Google Sheets):
+  GOOGLE_CREDENTIALS_JSON = '''{"type":"service_account","project_id":"...","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n","client_email":"...@....iam.gserviceaccount.com","client_id":"...","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token",...}'''
+
+  Скопируйте ВЕСЬ содержимое вашего credentials.json (от Google Cloud сервисного аккаунта),
+  сожмите в одну строку (без переносов) и вставьте вместо многоточия выше.
+  Либо в TOML можно так (тройные кавычки позволяют многострочность):
+  GOOGLE_CREDENTIALS_JSON = """
+  {"type": "service_account", "project_id": "my-project", ...}
+  """
+
+Для GigaChat (AI-рекомендации), если используете:
+  GIGACHAT_CLIENT_ID = "ваш-client-id"
+  GIGACHAT_CLIENT_SECRET = "ваш-client-secret"
+  GIGACHAT_AUTH_KEY = "ваш-base64-ключ"
+  GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
+
+Для Yandex Vision (OCR), если используете:
+  YANDEX_VISION_API_KEY = "ваш-api-ключ"
+
+Пример полного блока Secrets (заполните своими значениями):
+---
+GIGACHAT_CLIENT_ID = "..."
+GIGACHAT_CLIENT_SECRET = "..."
+GIGACHAT_AUTH_KEY = "..."
+GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
+
+GOOGLE_CREDENTIALS_JSON = """{"type":"service_account","project_id":"...","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n","client_email":"...@....iam.gserviceaccount.com",...}"""
+---
+
+───────────────────────────────────────────────────────────────
+ШАГ 3. Запуск
+───────────────────────────────────────────────────────────────
+Нажмите "Deploy!". Дождитесь сборки (1–3 минуты).
+Ссылка на приложение будет вида: https://xxx-xxx-xxx.streamlit.app
+
+───────────────────────────────────────────────────────────────
+Важно
+───────────────────────────────────────────────────────────────
+• Без GOOGLE_CREDENTIALS_JSON приложение не сможет загрузить данные из Google Sheets.
+• credentials.json в репозиторий не кладите — только в Secrets на share.streamlit.io.
+• После изменения секретов: в дашборде приложения → ⋮ → "Reboot app".
+
+═══════════════════════════════════════════════════════════════
