@@ -1169,10 +1169,10 @@ if df is not None and not df.empty:
         )
         use_local_ocr = ocr_engine == "Локальный (Tesseract)"
         st.sidebar.caption("Распознавание показателей с фото/скана или PDF (первая страница).")
-        _secrets = st.secrets if hasattr(st, "secrets") else {}
-        yandex_key = _secrets.get("YANDEX_VISION_API_KEY", "") or ""
-        yandex_iam = _secrets.get("YANDEX_VISION_IAM_TOKEN", "") or ""
-        yandex_folder_id = (_secrets.get("YANDEX_VISION_FOLDER_ID", "") or "").strip()
+        # Railway: переменные окружения; локально/Streamlit Cloud: st.secrets
+        yandex_key = _get_secret("YANDEX_VISION_API_KEY", "") or ""
+        yandex_iam = _get_secret("YANDEX_VISION_IAM_TOKEN", "") or ""
+        yandex_folder_id = (_get_secret("YANDEX_VISION_FOLDER_ID", "") or "").strip()
         if not yandex_folder_id and yandex_iam.strip():
             yandex_folder_id = "b1gaq3t2uh4lfs56jtks"
         ocr_auth = yandex_key.strip() or yandex_iam.strip()
@@ -1214,7 +1214,7 @@ if df is not None and not df.empty:
         if use_local_ocr and not TESSERACT_AVAILABLE and OCR_AVAILABLE:
             st.sidebar.caption("Установите: pip install pytesseract Pillow и Tesseract (macOS: brew install tesseract tesseract-lang)")
         if not use_local_ocr and not ocr_auth and OCR_AVAILABLE:
-            st.sidebar.caption("Для Yandex Vision укажите YANDEX_VISION_API_KEY в `.streamlit/secrets.toml`")
+            st.sidebar.caption("Для Yandex Vision укажите YANDEX_VISION_API_KEY в secrets.toml или в Variables (Railway).")
 
         # Попап с результатами сканирования (открывается после «Распознать»)
         if st.session_state.get("ocr_show_modal") and st.session_state.get("ocr_extracted") is not None:
