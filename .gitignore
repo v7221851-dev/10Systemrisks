@@ -4,6 +4,11 @@ credentials.json
 .env
 *.env.local
 
+# Файлы с секретами для деплоя (не коммитить)
+RAILWAY_ENV_VARS.txt
+STREAMLIT_SECRETS_*.toml
+STREAMLIT_SECRETS_TEMPLATE.toml
+
 # Виртуальные окружения
 .venv/
 venv/
