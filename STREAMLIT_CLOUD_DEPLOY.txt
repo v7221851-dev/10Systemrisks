@@ -5,6 +5,30 @@
 Ссылка: https://share.streamlit.io
 
 ───────────────────────────────────────────────────────────────
+ГДЕ ВЗЯТЬ СЕКРЕТЫ
+───────────────────────────────────────────────────────────────
+• Локально уже настроено?
+  Секреты можно скопировать из ваших файлов (НЕ коммитить их в git):
+  - GigaChat, Yandex Vision → из файла .streamlit/secrets.toml
+  - Google Sheets → полное содержимое файла credentials.json → в секрет GOOGLE_CREDENTIALS_JSON
+
+• Google (GOOGLE_CREDENTIALS_JSON) — обязателен для загрузки данных:
+  1. Google Cloud Console: https://console.cloud.google.com
+  2. Создать проект (или выбрать существующий) → APIs & Services → Credentials
+  3. Create credentials → Service account → создать аккаунт, выдать ключ (JSON)
+  4. Скачать JSON-файл — это и есть credentials.json
+  5. Таблицу Google Sheets открыть для доступа по ссылке для этого service account email
+  Содержимое этого JSON (целиком, в одну строку или в тройных кавычках) — в секрет GOOGLE_CREDENTIALS_JSON.
+
+• GigaChat (AI-рекомендации), по желанию:
+  - Регистрация/доступ: https://developers.sber.ru/portal/products/gigachat-api
+  - В личном кабинете: Client ID, Client Secret; при необходимости сформировать AUTH_KEY (base64 от "ClientID:ClientSecret").
+
+• Yandex Vision (OCR по фото), по желанию:
+  - Yandex Cloud: https://console.cloud.yandex.ru → создайте API-ключ для Vision (или сервисный аккаунт с ролью ai.vision.user).
+  - Ключ скопировать в секрет YANDEX_VISION_API_KEY.
+
+───────────────────────────────────────────────────────────────
 ШАГ 1. Войти и создать приложение
 ───────────────────────────────────────────────────────────────
 1. Откройте https://share.streamlit.io
