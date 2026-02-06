@@ -180,19 +180,16 @@ def _get_google_credentials_path():
 
 @st.cache_data(ttl=5)
 def get_data():
+    global _google_creds_path_cache
     SPREADSHEET_ID = "1kvlW3ko5yvhE6yInw-xER-NEKXT2UNze7BIR-I-yOfQ"
     try:
         CREDENTIALS_FILE, scope = _get_google_credentials_path()
     except FileNotFoundError as e:
         # Ошибка уже показана в _get_google_credentials_path()
-        # Сбрасываем кэш, чтобы при следующем запросе попробовать снова
-        global _google_creds_path_cache
         _google_creds_path_cache = None
         return None
     except Exception as e:
         st.error(f"❌ Ошибка получения credentials: {e}")
-        # Сбрасываем кэш при любой ошибке
-        global _google_creds_path_cache
         _google_creds_path_cache = None
         return None
     
@@ -202,8 +199,6 @@ def get_data():
         if not os.path.exists(CREDENTIALS_FILE):
             st.error(f"❌ Файл credentials не найден: {CREDENTIALS_FILE}")
             st.info("Проверьте, что переменная GOOGLE_CREDENTIALS_JSON правильно установлена в Railway.")
-            # Сбрасываем кэш
-            global _google_creds_path_cache
             _google_creds_path_cache = None
             return None
             
@@ -219,15 +214,11 @@ def get_data():
     except FileNotFoundError as e:
         st.error(f"❌ Файл credentials не найден: {e}")
         st.info("Проверьте, что переменная GOOGLE_CREDENTIALS_JSON правильно установлена в Railway.")
-        # Сбрасываем кэш
-        global _google_creds_path_cache
         _google_creds_path_cache = None
         return None
     except Exception as e:
         st.error(f"❌ Ошибка связи с Google Sheets: {e}")
         st.info("Проверьте:\n1. Правильность SPREADSHEET_ID\n2. Доступ сервис-аккаунта к таблице\n3. Наличие листа 'knowledge_db'")
-        # Сбрасываем кэш при ошибке
-        global _google_creds_path_cache
         _google_creds_path_cache = None
         return None
 
