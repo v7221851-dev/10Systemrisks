@@ -29,20 +29,25 @@ st.markdown(
 )
 
 # Настройки GigaChat API
-# Используем try/except для работы без secrets файла
-try:
-    GIGACHAT_API_URL = st.secrets.get("GIGACHAT_API_URL", "https://gigachat.devices.sberbank.ru/api/v1/chat/completions")
-    GIGACHAT_AUTH_URL = st.secrets.get("GIGACHAT_AUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth")
-    GIGACHAT_CLIENT_ID = st.secrets.get("GIGACHAT_CLIENT_ID", "")
-    GIGACHAT_SCOPE = st.secrets.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
-    GIGACHAT_API_KEY = st.secrets.get("GIGACHAT_API_KEY", "")  # Для self-hosted версии
-except (AttributeError, FileNotFoundError, Exception):
-    # Дефолтные значения, если secrets недоступны
-    GIGACHAT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-    GIGACHAT_CLIENT_ID = ""
-    GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
-    GIGACHAT_API_KEY = ""
+# Поддержка переменных окружения (Railway/Render) и st.secrets (Streamlit Cloud)
+import os
+def _get_secret(key, default=""):
+    """Читает секрет из переменных окружения или st.secrets."""
+    val = os.getenv(key, "")
+    if val:
+        return val
+    try:
+        if hasattr(st, "secrets"):
+            return st.secrets.get(key, default)
+    except Exception:
+        pass
+    return default
+
+GIGACHAT_API_URL = _get_secret("GIGACHAT_API_URL", "https://gigachat.devices.sberbank.ru/api/v1/chat/completions")
+GIGACHAT_AUTH_URL = _get_secret("GIGACHAT_AUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth")
+GIGACHAT_CLIENT_ID = _get_secret("GIGACHAT_CLIENT_ID", "")
+GIGACHAT_SCOPE = _get_secret("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+GIGACHAT_API_KEY = _get_secret("GIGACHAT_API_KEY", "")
 
 _google_creds_path_cache = None
 
@@ -50,26 +55,158 @@ def _get_google_credentials_path():
     """Путь к credentials: из секрета (Streamlit Cloud) или файл credentials.json."""
     global _google_creds_path_cache
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    
+    # Проверяем кэш только если файл существует
+    import os
     if _google_creds_path_cache is not None:
-        return _google_creds_path_cache, scope
-    try:
-        raw = (st.secrets.get("GOOGLE_CREDENTIALS_JSON") or "").strip()
-        if raw:
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-                f.write(raw)
-                _google_creds_path_cache = f.name
+        if os.path.exists(_google_creds_path_cache):
             return _google_creds_path_cache, scope
-    except Exception:
-        pass
-    _google_creds_path_cache = "credentials.json"
-    return _google_creds_path_cache, scope
+        else:
+            # Файл был удалён или не существует - сбрасываем кэш
+            _google_creds_path_cache = None
+    
+    # Диагностика для логов Railway (print попадает в логи)
+    print("=" * 60)
+    print("DEBUG: Проверка GOOGLE_CREDENTIALS_JSON")
+    print("=" * 60)
+    
+    # Выводим все переменные окружения, связанные с GOOGLE (для диагностики)
+    all_env_vars = {k: v for k, v in os.environ.items() if "GOOGLE" in k.upper() or "CREDENTIAL" in k.upper()}
+    print(f"Найдено переменных окружения с 'GOOGLE' или 'CREDENTIAL': {len(all_env_vars)}")
+    for key in sorted(all_env_vars.keys()):
+        val = all_env_vars[key]
+        print(f"  {key}: {'установлена' if val else 'пуста'} (длина: {len(val) if val else 0})")
+    
+    # Пробуем прочитать из переменных окружения (Railway, Render и др.)
+    raw = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
+    
+    print(f"\nos.getenv('GOOGLE_CREDENTIALS_JSON'): {'найдена' if raw else 'НЕ НАЙДЕНА'}")
+    if raw:
+        print(f"Длина значения: {len(raw)} символов")
+        print(f"Начинается с: {raw[:50]}...")
+        print(f"Заканчивается на: ...{raw[-50:]}")
+    else:
+        print("❌ Переменная GOOGLE_CREDENTIALS_JSON пуста или не установлена!")
+        print("Проверьте Railway → Settings → Variables → GOOGLE_CREDENTIALS_JSON")
+    
+    raw = raw.strip() if raw else ""
+    env_exists = bool(raw)
+    
+    # Если нет в env, пробуем из секретов Streamlit Cloud
+    if not raw:
+        print("Пробуем прочитать из st.secrets...")
+        try:
+            if hasattr(st, "secrets"):
+                try:
+                    raw = st.secrets.get("GOOGLE_CREDENTIALS_JSON", "")
+                    print(f"st.secrets.get вернул: {bool(raw)}")
+                except Exception as e:
+                    print(f"Ошибка st.secrets.get: {e}")
+                    try:
+                        raw = st.secrets["GOOGLE_CREDENTIALS_JSON"]
+                        print(f"st.secrets[] вернул: {bool(raw)}")
+                    except (KeyError, TypeError) as e:
+                        print(f"Ошибка st.secrets[]: {e}")
+                        pass
+        except Exception as e:
+            print(f"Общая ошибка st.secrets: {e}")
+            pass
+        
+    if raw:
+        raw_str = str(raw).strip()
+        print(f"Обработка JSON строки длиной {len(raw_str)} символов...")
+        if raw_str and raw_str != "":
+            # Пробуем распарсить JSON для проверки
+            try:
+                parsed = json.loads(raw_str)
+                print("✅ JSON успешно распарсен!")
+                print(f"Project ID: {parsed.get('project_id', 'N/A')}")
+                print(f"Client Email: {parsed.get('client_email', 'N/A')}")
+            except json.JSONDecodeError as e:
+                print(f"❌ Ошибка парсинга JSON: {e}")
+                print(f"Проблемный фрагмент: {raw_str[max(0, e.pos-20):e.pos+20]}")
+                st.error(f"❌ Ошибка формата JSON в GOOGLE_CREDENTIALS_JSON: {e}")
+                st.info("Проверьте, что секрет содержит валидный JSON (без лишних кавычек или символов).")
+                raw_str = None
+            
+            if raw_str:
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+                    f.write(raw_str)
+                    _google_creds_path_cache = f.name
+                print(f"✅ Временный файл создан: {_google_creds_path_cache}")
+                return _google_creds_path_cache, scope
+    
+    # Fallback: проверяем локальный файл
+    if os.path.isfile("credentials.json"):
+        print("✅ Найден локальный файл credentials.json")
+        _google_creds_path_cache = "credentials.json"
+        return _google_creds_path_cache, scope
+    
+    # Нет ни секрета, ни файла — показываем подсказку с диагностикой
+    print("❌ GOOGLE_CREDENTIALS_JSON не найден!")
+    st.error("❌ **Не найден GOOGLE_CREDENTIALS_JSON**")
+    
+    # Диагностическая информация
+    debug_info = []
+    if env_exists:
+        debug_info.append("✅ Переменная окружения GOOGLE_CREDENTIALS_JSON найдена, но JSON не распарсился")
+        print("⚠️ Переменная найдена, но JSON невалиден")
+    else:
+        debug_info.append("❌ Переменная окружения GOOGLE_CREDENTIALS_JSON не найдена")
+        print("❌ Переменная окружения не найдена")
+    
+    if os.path.isfile("credentials.json"):
+        debug_info.append("✅ Локальный файл credentials.json найден")
+    else:
+        debug_info.append("❌ Локальный файл credentials.json не найден")
+    
+    st.warning("\n".join(debug_info))
+    
+    st.info(
+        "**Для Railway:**\n\n"
+        "1. Откройте Railway → ваш сервис → **Settings** → **Variables**\n"
+        "2. Убедитесь, что есть переменная **`GOOGLE_CREDENTIALS_JSON`** (точное имя, без пробелов)\n"
+        "3. Значение должно быть чистым JSON (открывающая `{` до закрывающей `}`)\n"
+        "4. **Без** префикса `GOOGLE_CREDENTIALS_JSON =` и **без** тройных кавычек `'''`\n"
+        "5. Сохраните и перезапустите деплой (Railway сделает это автоматически)\n\n"
+        "**Для проверки:** Запустите локально `python3 check_railway_env.py` и скопируйте строку из вывода.\n\n"
+        "**Проверьте логи Railway** - там должна быть диагностическая информация о том, найдена ли переменная."
+    )
+    
+    # НЕ возвращаем несуществующий файл - это вызовет ошибку
+    # Вместо этого вернем None, чтобы get_data() мог обработать ошибку
+    raise FileNotFoundError("GOOGLE_CREDENTIALS_JSON не найден ни в переменных окружения, ни в файле credentials.json")
 
 @st.cache_data(ttl=5)
 def get_data():
     SPREADSHEET_ID = "1kvlW3ko5yvhE6yInw-xER-NEKXT2UNze7BIR-I-yOfQ"
-    CREDENTIALS_FILE, scope = _get_google_credentials_path()
     try:
+        CREDENTIALS_FILE, scope = _get_google_credentials_path()
+    except FileNotFoundError as e:
+        # Ошибка уже показана в _get_google_credentials_path()
+        # Сбрасываем кэш, чтобы при следующем запросе попробовать снова
+        global _google_creds_path_cache
+        _google_creds_path_cache = None
+        return None
+    except Exception as e:
+        st.error(f"❌ Ошибка получения credentials: {e}")
+        # Сбрасываем кэш при любой ошибке
+        global _google_creds_path_cache
+        _google_creds_path_cache = None
+        return None
+    
+    try:
+        # Проверяем, что файл существует перед использованием
+        import os
+        if not os.path.exists(CREDENTIALS_FILE):
+            st.error(f"❌ Файл credentials не найден: {CREDENTIALS_FILE}")
+            st.info("Проверьте, что переменная GOOGLE_CREDENTIALS_JSON правильно установлена в Railway.")
+            # Сбрасываем кэш
+            global _google_creds_path_cache
+            _google_creds_path_cache = None
+            return None
+            
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
         client = gspread.authorize(creds)
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet("knowledge_db")
@@ -79,8 +216,19 @@ def get_data():
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         return df
+    except FileNotFoundError as e:
+        st.error(f"❌ Файл credentials не найден: {e}")
+        st.info("Проверьте, что переменная GOOGLE_CREDENTIALS_JSON правильно установлена в Railway.")
+        # Сбрасываем кэш
+        global _google_creds_path_cache
+        _google_creds_path_cache = None
+        return None
     except Exception as e:
-        st.error(f"Ошибка связи: {e}")
+        st.error(f"❌ Ошибка связи с Google Sheets: {e}")
+        st.info("Проверьте:\n1. Правильность SPREADSHEET_ID\n2. Доступ сервис-аккаунта к таблице\n3. Наличие листа 'knowledge_db'")
+        # Сбрасываем кэш при ошибке
+        global _google_creds_path_cache
+        _google_creds_path_cache = None
         return None
 
 # Словарь переводов названий систем на русский
@@ -392,22 +540,16 @@ def get_gigachat_access_token():
         return cached, None
     
     try:
-        # Получаем Authorization key из secrets (если указан напрямую)
+        # Получаем Authorization key из переменных окружения или secrets
         auth_data = None
-        try:
-            auth_key = st.secrets.get("GIGACHAT_AUTH_KEY", "")
-            if auth_key:
-                # Если указан готовый Authorization key в base64 (без префикса Basic)
-                auth_data = auth_key.strip()
-        except Exception:
-            pass
+        auth_key = _get_secret("GIGACHAT_AUTH_KEY", "")
+        if auth_key:
+            # Если указан готовый Authorization key в base64 (без префикса Basic)
+            auth_data = auth_key.strip()
         
         # Если нет готового ключа, формируем из Client ID и Secret
         if not auth_data:
-            try:
-                client_secret = st.secrets.get("GIGACHAT_CLIENT_SECRET", "")
-            except Exception:
-                client_secret = ""
+            client_secret = _get_secret("GIGACHAT_CLIENT_SECRET", "")
             
             if not client_secret:
                 return None, "Требуется GIGACHAT_CLIENT_SECRET или GIGACHAT_AUTH_KEY в secrets.toml. Client Secret можно получить на developers.sber.ru"
