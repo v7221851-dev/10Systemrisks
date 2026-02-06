@@ -1195,11 +1195,13 @@ if df is not None and not df.empty:
                 else:
                     img_bytes = raw_bytes
                 if img_bytes is not None:
+                    # При API-ключе folder_id не передаём (избегаем ошибки прав доступа)
+                    folder_for_request = (yandex_folder_id or None) if yandex_iam else None
                     raw_text, err = yandex_vision_ocr(
                         img_bytes,
                         api_key=yandex_key or None,
                         iam_token=yandex_iam or None,
-                        folder_id=yandex_folder_id or None,
+                        folder_id=folder_for_request,
                     )
                     if err:
                         st.sidebar.error(err)

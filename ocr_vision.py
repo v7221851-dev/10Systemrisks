@@ -122,27 +122,50 @@ def yandex_vision_ocr(
 
     try:
         data = resp.json()
-        # Структура ответа: results[].results[] с textAnnotation или blocks
+        # Структура ответа Yandex Vision: results[0].results[0].textDetection.pages[].blocks[].lines[].words[].text
+        # См. https://github.com/yandex-cloud/ocr
         results = data.get("results", [])
         if not results:
             return None, "В ответе нет результатов"
         first = results[0]
         inner = first.get("results", [])
         if not inner:
-            return "", None  # пустая страница
-        ann = inner[0]
-        text = ann.get("textAnnotation", {}).get("text")
-        if text is not None:
-            return text.strip() or "", None
-        # Альтернатива: blocks -> lines -> text
+            return "", None
+        ann = inner[0] if isinstance(inner[0], dict) else inner
+        # Вариант 1: textAnnotation.text (если API вернёт в старом формате)
+        text = ann.get("textAnnotation", {}).get("text") if isinstance(ann.get("textAnnotation"), dict) else None
+        if text and str(text).strip():
+            return str(text).strip(), None
+        # Вариант 2: textDetection.pages[].blocks[].lines[].words[].text — актуальный формат Yandex Vision
+        text_detection = ann.get("textDetection") or ann.get("text_detection")
+        if text_detection:
+            pages = text_detection.get("pages", [])
+            all_lines = []
+            for page in pages:
+                for block in page.get("blocks", []):
+                    for line in block.get("lines", []):
+                        words = line.get("words", [])
+                        line_text = " ".join(str(w.get("text", "")).strip() for w in words if w.get("text"))
+                        if line_text:
+                            all_lines.append(line_text)
+            if all_lines:
+                return "\n".join(all_lines), None
+        # Вариант 3: blocks[].lines[].text (без words)
         blocks = ann.get("blocks", [])
         lines = []
         for block in blocks:
             for line in block.get("lines", []):
-                t = line.get("text", "").strip()
+                t = line.get("text", "").strip() if isinstance(line.get("text"), str) else ""
                 if t:
                     lines.append(t)
-        return "\n".join(lines), None
+                elif line.get("words"):
+                    line_str = " ".join(str(w.get("text", "")).strip() for w in line["words"] if w.get("text")).strip()
+                    if line_str:
+                        lines.append(line_str)
+        if lines:
+            return "\n".join(lines), None
+        # Пустой результат: возможно, изображение пустое или нечитаемое
+        return "", None
     except Exception as e:
         return None, f"Ошибка разбора ответа: {e}"
 
