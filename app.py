@@ -8,12 +8,10 @@ import base64
 import time
 
 try:
-    from ocr_vision import yandex_vision_ocr, tesseract_ocr, parse_lab_text, map_to_factors
-    from ocr_vision import TESSERACT_AVAILABLE
+    from ocr_vision import yandex_vision_ocr, parse_lab_text, map_to_factors
     OCR_AVAILABLE = True
 except ImportError:
     OCR_AVAILABLE = False
-    TESSERACT_AVAILABLE = False
 
 # --- КОНФИГУРАЦИЯ ---
 st.set_page_config(page_title="Health Risk Advisor 10.0", page_icon="🏥", layout="wide")
@@ -1164,36 +1162,22 @@ if df is not None and not df.empty:
         # Railway: переменные окружения; локально/Streamlit Cloud: st.secrets
         yandex_key = _get_secret("YANDEX_VISION_API_KEY", "") or ""
         yandex_iam = _get_secret("YANDEX_VISION_IAM_TOKEN", "") or ""
+        # folder_id только для IAM-токена; при API-ключе не передаём (избегаем ошибки прав доступа)
         yandex_folder_id = (_get_secret("YANDEX_VISION_FOLDER_ID", "") or "").strip()
         if not yandex_folder_id and yandex_iam.strip():
             yandex_folder_id = "b1gaq3t2uh4lfs56jtks"
         ocr_auth = yandex_key.strip() or yandex_iam.strip()
         
-        # Если Tesseract недоступен — показываем только Yandex Vision (без опции Tesseract)
-        if TESSERACT_AVAILABLE:
-            ocr_engine = st.sidebar.radio(
-                "Способ распознавания",
-                ["Локальный (Tesseract)", "Yandex Vision (облако)"],
-                index=0,
-                help="Локальный — без облака и ключей; Yandex — нужен API-ключ и права.",
-            )
-            use_local_ocr = ocr_engine == "Локальный (Tesseract)"
-        else:
-            use_local_ocr = False
-            st.sidebar.caption("Распознавание: **Yandex Vision** (облако)")
-        
+        st.sidebar.caption("Распознавание: **Yandex Vision** (облако)")
         st.sidebar.caption("Распознавание показателей с фото/скана или PDF (первая страница).")
-        ocr_can_run = (use_local_ocr and TESSERACT_AVAILABLE) or (not use_local_ocr and ocr_auth)
+        ocr_can_run = bool(ocr_auth)
         
-        # Диагностика для отладки (можно убрать после проверки)
+        # Диагностика для отладки
         if st.sidebar.checkbox("🔧 Показать диагностику OCR", value=False, key="ocr_debug"):
             st.sidebar.write("**Диагностика OCR:**")
-            st.sidebar.write(f"- Tesseract доступен: {TESSERACT_AVAILABLE}")
             st.sidebar.write(f"- Yandex API Key найден: {'✅ Да' if yandex_key else '❌ Нет'}")
             st.sidebar.write(f"- Yandex IAM Token найден: {'✅ Да' if yandex_iam else '❌ Нет'}")
             st.sidebar.write(f"- OCR авторизация: {'✅ Есть' if ocr_auth else '❌ Нет'}")
-            st.sidebar.write(f"- Выбранный движок: {'Локальный (Tesseract)' if use_local_ocr else 'Yandex Vision (облако)'}")
-            st.sidebar.write(f"- use_local_ocr: {use_local_ocr}")
             st.sidebar.write(f"- Может запуститься: {'✅ Да' if ocr_can_run else '❌ Нет'}")
         
         ocr_upload = st.sidebar.file_uploader("Фото, скан или PDF", type=["png", "jpg", "jpeg", "pdf"], key="ocr_upload")
@@ -1211,16 +1195,12 @@ if df is not None and not df.empty:
                 else:
                     img_bytes = raw_bytes
                 if img_bytes is not None:
-                    # Tesseract не используем, если недоступен (на Railway всегда Yandex Vision)
-                    if use_local_ocr and TESSERACT_AVAILABLE:
-                        raw_text, err = tesseract_ocr(img_bytes)
-                    else:
-                        raw_text, err = yandex_vision_ocr(
-                            img_bytes,
-                            api_key=yandex_key or None,
-                            iam_token=yandex_iam or None,
-                            folder_id=yandex_folder_id or None,
-                        )
+                    raw_text, err = yandex_vision_ocr(
+                        img_bytes,
+                        api_key=yandex_key or None,
+                        iam_token=yandex_iam or None,
+                        folder_id=yandex_folder_id or None,
+                    )
                     if err:
                         st.sidebar.error(err)
                     else:
@@ -1231,9 +1211,7 @@ if df is not None and not df.empty:
                         st.session_state.ocr_raw_text = raw_text or ""
                         st.session_state.ocr_show_modal = True
                         st.rerun()
-        if use_local_ocr and not TESSERACT_AVAILABLE and OCR_AVAILABLE:
-            pass  # Tesseract не показываем, когда недоступен
-        if not use_local_ocr and not ocr_auth and OCR_AVAILABLE:
+        if not ocr_auth and OCR_AVAILABLE:
             st.sidebar.caption("Для Yandex Vision укажите YANDEX_VISION_API_KEY в secrets.toml или в Variables (Railway).")
 
         # Попап с результатами сканирования (открывается после «Распознать»)

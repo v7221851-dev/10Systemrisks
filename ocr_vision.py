@@ -1,7 +1,6 @@
 """
 Модуль распознавания лабораторных бланков.
-- Yandex Vision API (облако, нужны ключи и права).
-- Локальный Tesseract (без облака, данные не уходят с компьютера).
+- Yandex Vision API (облако).
 Парсинг «показатель — значение — единица», маппинг на factor_id.
 """
 
@@ -18,37 +17,6 @@ try:
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
-
-# Опциональная поддержка локального OCR через Tesseract
-TESSERACT_AVAILABLE = False
-try:
-    import pytesseract
-    from PIL import Image
-    TESSERACT_AVAILABLE = True
-except ImportError:
-    pass
-
-
-def tesseract_ocr(image_bytes: bytes, lang: str = "rus+eng") -> tuple[str | None, str | None]:
-    """
-    Локальное распознавание текста через Tesseract (без облака).
-    Возвращает (raw_text, None) при успехе или (None, error_message).
-    Нужно: pip install pytesseract Pillow и установленный Tesseract (brew install tesseract tesseract-lang).
-    """
-    if not TESSERACT_AVAILABLE:
-        return None, "Установите: pip install pytesseract Pillow и Tesseract (macOS: brew install tesseract tesseract-lang)"
-    if not image_bytes:
-        return None, "Изображение пустое"
-    try:
-        img = Image.open(io.BytesIO(image_bytes))
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-        text = pytesseract.image_to_string(img, lang=lang)
-        return (text or "").strip(), None
-    except pytesseract.TesseractNotFoundError:
-        return None, "Tesseract не найден. Установите: macOS — brew install tesseract tesseract-lang"
-    except Exception as e:
-        return None, f"Ошибка Tesseract OCR: {e}"
 
 
 def pdf_to_image_bytes(pdf_bytes: bytes, page_index: int = 0, dpi: int = 150) -> tuple[bytes | None, str | None]:
@@ -101,7 +69,7 @@ def yandex_vision_ocr(
         return None, "Задайте YANDEX_VISION_API_KEY или YANDEX_VISION_IAM_TOKEN в secrets.toml"
 
     if auth_header.startswith("Bearer") and not (folder_id and str(folder_id).strip()):
-        return None, "При IAM-токене укажите YANDEX_VISION_FOLDER_ID в secrets.toml (ID каталога, например b1gaq3t2uh4lfs56jtks)"
+        return None, "При IAM-токене укажите YANDEX_VISION_FOLDER_ID в secrets.toml (ID каталога)"
 
     try:
         content_b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -126,11 +94,13 @@ def yandex_vision_ocr(
         "Authorization": auth_header,
         "Content-Type": "application/json",
     }
+    # При аутентификации по API-ключу (Api-Key) НЕ передаём x-folder-id — ключ уже привязан к каталогу.
+    # Иначе возникает ошибка "Permission to resource-manager.folder ... denied".
+    # folder_id передаём только для IAM-токена (Bearer).
     folder_id_clean = (folder_id and str(folder_id).strip()) or None
-    if folder_id_clean:
+    if folder_id_clean and auth_header.startswith("Bearer"):
         headers["x-folder-id"] = folder_id_clean
 
-    # Часть API Yandex Cloud ожидает folderId в URL при IAM-токене
     url = VISION_URL
     if folder_id_clean and auth_header.startswith("Bearer"):
         url = f"{VISION_URL}?folderId={folder_id_clean}"
