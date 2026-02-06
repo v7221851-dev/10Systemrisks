@@ -1,0 +1,32 @@
+# Исправление rebase и исключение файлов из Git
+
+Выполните в терминале по порядку:
+
+# 1. Прервать текущий rebase
+git rebase --abort
+
+# 2. Временно убрать локальные файлы (чтобы pull не перезаписал их)
+mv RAILWAY_ENV_VARS.txt RAILWAY_ENV_VARS.txt.local
+mv STREAMLIT_SECRETS_TEMPLATE.toml STREAMLIT_SECRETS_TEMPLATE.toml.local
+
+# 3. Подтянуть изменения с GitHub
+git pull --rebase origin main
+
+# 4. Удалить эти файлы из индекса Git (чтобы больше не коммитить)
+git rm --cached RAILWAY_ENV_VARS.txt 2>/dev/null || true
+git rm --cached STREAMLIT_SECRETS_TEMPLATE.toml 2>/dev/null || true
+
+# 5. Закоммитить .gitignore и снятие файлов с отслеживания
+git add .gitignore
+git add -u
+git status
+git commit -m "Stop tracking RAILWAY_ENV_VARS and STREAMLIT_SECRETS_TEMPLATE, update gitignore"
+
+# 6. Push
+git push origin main
+
+# 7. Вернуть локальные файлы
+mv RAILWAY_ENV_VARS.txt.local RAILWAY_ENV_VARS.txt
+mv STREAMLIT_SECRETS_TEMPLATE.toml.local STREAMLIT_SECRETS_TEMPLATE.toml
+
+Готово. Эти файлы теперь в .gitignore и не попадут в Git.

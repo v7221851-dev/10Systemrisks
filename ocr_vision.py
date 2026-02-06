@@ -170,31 +170,25 @@ def yandex_vision_ocr(
         return None, f"Ошибка разбора ответа: {e}"
 
 
+def _normalize_ocr_line(line: str) -> str:
+    """Убирает типичный шум OCR: лишние пробелы, звёздочки, заменяет запятую на точку в числах."""
+    line = re.sub(r"\s+", " ", line).strip()
+    line = re.sub(r"\*+", "", line)
+    return line
+
+
 def parse_lab_text(raw_text: str) -> list[dict]:
     """
     Извлекает из сырого текста OCR пары «название показателя — значение — единица».
-    Поддерживает форматы: "Глюкоза 5.4 ммоль/л", "Креатинин: 90", "ТТГ 2.5 мМЕ/л".
+    Форматы: "Глюкоза 5.4 ммоль/л", "Креатинин: 90", "АЛТ - 25", "ТТГ (2.5) мМЕ/л", "СРБ < 5".
     Возвращает список словарей: [ {"name": str, "value": float, "unit": str}, ... ]
     """
     if not raw_text or not raw_text.strip():
         return []
 
     out = []
-    # Число: целое или с точкой/запятой (для лабораторных значений)
-    num_pattern = r"(\d+[,.]?\d*)"
-    # Единицы измерения (типичные окончания)
-    unit_suffix = r"\s*([а-яА-Яa-zA-Z/%²³°·\s\-]+)?$"
-    # Строка вида: название (буквы, пробелы, дефис, скобки) затем число и опционально единица
-    # Вариант 1: "Название 5.4 ммоль/л" или "Название: 5.4"
-    line_pattern = re.compile(
-        r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s*[:]\s*" + num_pattern + r"\s*" + unit_suffix,
-        re.UNICODE,
-    )
-    # Вариант 2: "Название 5.4 ммоль/л" без двоеточия (число после пробелов)
-    line_pattern2 = re.compile(
-        r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s+" + num_pattern + r"\s*" + unit_suffix,
-        re.UNICODE,
-    )
+    num_pattern = r"([<>]?\s*)(\d+[,.]?\d*)"
+    unit_suffix = r"\s*([а-яА-Яa-zA-Z0-9/%²³°·\s\-]+)?$"
 
     def normalize_num(s: str) -> float:
         s = s.strip().replace(",", ".")
@@ -209,102 +203,159 @@ def parse_lab_text(raw_text: str) -> list[dict]:
     def clean_unit(s: str) -> str:
         return s.strip() if s else ""
 
+    # Паттерны: название + разделитель + число + единица
+    # num_pattern даёт группы: (<> опционально), (число)
+    patterns = [
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s*[:]\s*" + num_pattern + r"\s*" + unit_suffix, re.UNICODE),
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s+[\-–—]\s*" + num_pattern + r"\s*" + unit_suffix, re.UNICODE),
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s+" + num_pattern + r"\s*" + unit_suffix, re.UNICODE),
+    ]
+
+    seen = set()
     for line in raw_text.splitlines():
-        line = line.strip()
-        if not line:
+        line = _normalize_ocr_line(line)
+        if not line or len(line) < 4:
             continue
-        m = line_pattern.search(line) or line_pattern2.search(line)
-        if m:
-            name = clean_name(m.group(1))
-            val_str = m.group(2)
-            unit = clean_unit(m.group(3)) if m.lastindex >= 3 and m.group(3) else ""
-            # Отсекаем слишком короткие «названия» (могут быть артефакты)
-            if len(name) >= 2:
-                out.append({"name": name, "value": normalize_num(val_str), "unit": unit})
+        for pattern in patterns:
+            m = pattern.search(line)
+            if m:
+                name = clean_name(m.group(1))
+                val_str = m.group(3)  # число из num_pattern (вторая скобка)
+                unit = clean_unit(m.group(4)) if m.lastindex >= 4 and m.group(4) else ""
+                if len(name) < 2 or name.isdigit():
+                    continue
+                value = normalize_num(val_str)
+                key = (name.lower(), round(value, 4))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"name": name, "value": value, "unit": unit})
+                break
 
     return out
 
 
-def _build_synonym_map(df) -> dict:
-    """Строит словарь: нормализованное название/синоним -> factor_id."""
-    import pandas as pd
-
+def _build_synonym_map(df):
+    """
+    Строит словарь синонимов и возвращает пары (key, factor_id), отсортированные по убыванию длины ключа.
+    Так при маппинге сначала срабатывает самое длинное совпадение (например «глюкоза натощак» до «глюкоза»).
+    """
     syn = {}
-    if df is None or df.empty:
-        return syn
-    for _, row in df.iterrows():
-        fid = row.get("factor_id")
-        fname = str(row.get("factor_name", "")).strip()
-        uname = str(row.get("unit_name", "")).strip()
-        if not fid:
-            continue
-        # Ключ: название в нижнем регистре без лишних пробелов
-        key = re.sub(r"\s+", " ", fname).lower().strip()
-        if key:
-            syn[key] = fid
-        # Короткие варианты (первые слова)
-        for part in fname.replace(",", " ").split():
-            p = part.strip().lower()
-            if len(p) >= 2 and p not in syn:
-                syn[p] = fid
-    # Ручные синонимы для частых названий в бланках
+    if df is not None and not df.empty:
+        for _, row in df.iterrows():
+            fid = row.get("factor_id")
+            fname = str(row.get("factor_name", "")).strip()
+            if not fid:
+                continue
+            key = re.sub(r"\s+", " ", fname).lower().strip()
+            if key and key not in syn:
+                syn[key] = fid
+            # Вариант без скобок: "Глюкоза (натощак)" -> "глюкоза натощак" и "глюкоза"
+            no_brackets = re.sub(r"\s*\([^)]*\)\s*", " ", fname)
+            key2 = re.sub(r"\s+", " ", no_brackets).lower().strip()
+            if key2 and key2 not in syn:
+                syn[key2] = fid
+            for part in fname.replace(",", " ").split():
+                p = part.strip().lower()
+                if len(p) >= 2 and p not in syn:
+                    syn[p] = fid
+    # Синонимы: названия с бланков (в т.ч. Хеликс) -> factor_id
     manual = {
         "глюкоза": "M001",
         "glucose": "M001",
         "glu": "M001",
+        "глюкоза натощак": "M001",
+        "глюкоза (сыворотка)": "M001",
+        "глюкоза сыворотка": "M001",
         "креатинин": "R001",
         "creatinine": "R001",
         "crea": "R001",
         "ттг": "H001",
         "tsh": "H001",
-        "t4": "H002",
+        "тиреотропный": "H001",
         "т4": "H002",
+        "t4": "H002",
+        "тироксин": "H002",
         "ат-тпо": "H003",
         "аттпо": "H003",
+        "антитела тпо": "H003",
         "холестерин": "C002",
+        "холестерин общий": "C002",
         "cholesterol": "C002",
+        "лпвп": "C002",
+        "лпнп": "C002",
+        "лпвп-холестерин": "C002",
+        "лпнп-холестерин": "C002",
+        "hdl": "C002",
+        "ldl": "C002",
+        "общий белок": "H008",
+        "белок общий": "H008",
+        "срб": "F001",
+        "с-реактивный белок": "F001",
+        "c-реактивный белок": "F001",
+        "crp": "F001",
+        "с-реактивный": "F001",
+        "триглицериды": "H010",
+        "триглицериды общие": "H010",
         "алт": "HP001",
         "alt": "HP001",
+        "алат": "HP001",
+        "аланинаминотрансфераза": "HP001",
         "аст": "HP002",
         "ast": "HP002",
+        "асат": "HP002",
+        "аспартатаминотрансфераза": "HP002",
+        "билирубин общий": "H003",
+        "билирубин": "H003",
+        "билирубин прямой": "H004",
         "ггт": "HP004",
         "ggt": "HP004",
+        "гамма-гт": "HP004",
+        "гамма-глутамилтрансфераза": "HP004",
+        "щелочная фосфатаза": "H006",
+        "щелочная фосфатаза (щф)": "H006",
+        "щф": "H006",
+        "алп": "H006",
+        "альфа-амилаза": "H006",
         "мочевина": "R002",
         "urea": "R002",
         "мочевая кислота": "R004",
         "витамин d": "SK001",
         "витамин d (25-oh)": "SK001",
+        "25-oh витамин d": "SK001",
         "ферритин": "SK002",
-        "ферритин,": "SK002",
         "цинк": "SK003",
         "селен": "SK005",
         "пепсиноген i": "GAS001",
+        "пепсиноген 1": "GAS001",
         "пепсиноген ii": "GAS002",
+        "пепсиноген 2": "GAS002",
         "гастрин": "GAS003",
         "витамин b12": "GAS005",
+        "в12": "GAS005",
         "вгд": "OCU001",
         "ретинол": "OCU002",
         "витамин a": "OCU002",
         "гомоцистеин": "OCU003",
-        "crp": "F001",
-        "с-реактивный": "F001",
         "фибриноген": "F002",
         "соэ": "F005",
+        "скорость оседания": "F005",
     }
     for k, v in manual.items():
         if k not in syn:
             syn[k] = v
-    return syn
+    # Сортируем по убыванию длины ключа — сначала длинные совпадения
+    return sorted(syn.items(), key=lambda x: -len(x[0]))
 
 
 def map_to_factors(parsed: list[dict], df) -> dict:
     """
     Сопоставляет распознанные показатели (name, value, unit) с factor_id по справочнику df.
-    Возвращает словарь { factor_id: value } только для успешно сопоставленных и в допустимом диапазоне.
+    Сначала проверяются длинные совпадения (например «глюкоза натощак»), затем короткие.
+    Возвращает словарь { factor_id: value } для успешно сопоставленных в допустимом диапазоне.
     """
-    import pandas as pd
-
-    synonym_map = _build_synonym_map(df)
+    synonym_list = _build_synonym_map(df)
+    synonym_dict = dict(synonym_list)
     factor_rows = {}
     if df is not None and not df.empty:
         for _, row in df.iterrows():
@@ -318,13 +369,11 @@ def map_to_factors(parsed: list[dict], df) -> dict:
         unit = (item.get("unit") or "").strip()
 
         fid = None
-        # Точное совпадение
-        if name_norm in synonym_map:
-            fid = synonym_map[name_norm]
+        if name_norm in synonym_dict:
+            fid = synonym_dict[name_norm]
         else:
-            # Поиск по вхождению ключа в название
-            for key, f in synonym_map.items():
-                if len(key) >= 3 and key in name_norm:
+            for key, f in synonym_list:
+                if len(key) >= 2 and key in name_norm:
                     fid = f
                     break
         if not fid or fid not in factor_rows:
