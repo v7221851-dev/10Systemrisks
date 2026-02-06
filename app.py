@@ -1169,21 +1169,18 @@ if df is not None and not df.empty:
             yandex_folder_id = "b1gaq3t2uh4lfs56jtks"
         ocr_auth = yandex_key.strip() or yandex_iam.strip()
         
-        # Умный выбор по умолчанию: на Railway (без Tesseract) выбираем Yandex Vision
-        default_ocr_index = 1 if not TESSERACT_AVAILABLE and ocr_auth else 0
-        
-        ocr_engine = st.sidebar.radio(
-            "Способ распознавания",
-            ["Локальный (Tesseract)", "Yandex Vision (облако)"],
-            index=default_ocr_index,
-            help="Локальный — без облака и ключей; Yandex — нужен API-ключ и права.",
-        )
-        use_local_ocr = ocr_engine == "Локальный (Tesseract)"
-        
-        # Автоматическое переключение: если выбран Tesseract, но он недоступен, используем Yandex Vision
-        if use_local_ocr and not TESSERACT_AVAILABLE and ocr_auth:
+        # Если Tesseract недоступен — показываем только Yandex Vision (без опции Tesseract)
+        if TESSERACT_AVAILABLE:
+            ocr_engine = st.sidebar.radio(
+                "Способ распознавания",
+                ["Локальный (Tesseract)", "Yandex Vision (облако)"],
+                index=0,
+                help="Локальный — без облака и ключей; Yandex — нужен API-ключ и права.",
+            )
+            use_local_ocr = ocr_engine == "Локальный (Tesseract)"
+        else:
             use_local_ocr = False
-            st.sidebar.info("ℹ️ Tesseract недоступен, используется Yandex Vision")
+            st.sidebar.caption("Распознавание: **Yandex Vision** (облако)")
         
         st.sidebar.caption("Распознавание показателей с фото/скана или PDF (первая страница).")
         ocr_can_run = (use_local_ocr and TESSERACT_AVAILABLE) or (not use_local_ocr and ocr_auth)
@@ -1195,7 +1192,7 @@ if df is not None and not df.empty:
             st.sidebar.write(f"- Yandex API Key найден: {'✅ Да' if yandex_key else '❌ Нет'}")
             st.sidebar.write(f"- Yandex IAM Token найден: {'✅ Да' if yandex_iam else '❌ Нет'}")
             st.sidebar.write(f"- OCR авторизация: {'✅ Есть' if ocr_auth else '❌ Нет'}")
-            st.sidebar.write(f"- Выбранный движок: {ocr_engine}")
+            st.sidebar.write(f"- Выбранный движок: {'Локальный (Tesseract)' if use_local_ocr else 'Yandex Vision (облако)'}")
             st.sidebar.write(f"- use_local_ocr: {use_local_ocr}")
             st.sidebar.write(f"- Может запуститься: {'✅ Да' if ocr_can_run else '❌ Нет'}")
         
@@ -1214,7 +1211,8 @@ if df is not None and not df.empty:
                 else:
                     img_bytes = raw_bytes
                 if img_bytes is not None:
-                    if use_local_ocr:
+                    # Tesseract не используем, если недоступен (на Railway всегда Yandex Vision)
+                    if use_local_ocr and TESSERACT_AVAILABLE:
                         raw_text, err = tesseract_ocr(img_bytes)
                     else:
                         raw_text, err = yandex_vision_ocr(
@@ -1234,7 +1232,7 @@ if df is not None and not df.empty:
                         st.session_state.ocr_show_modal = True
                         st.rerun()
         if use_local_ocr and not TESSERACT_AVAILABLE and OCR_AVAILABLE:
-            st.sidebar.caption("Установите: pip install pytesseract Pillow и Tesseract (macOS: brew install tesseract tesseract-lang)")
+            pass  # Tesseract не показываем, когда недоступен
         if not use_local_ocr and not ocr_auth and OCR_AVAILABLE:
             st.sidebar.caption("Для Yandex Vision укажите YANDEX_VISION_API_KEY в secrets.toml или в Variables (Railway).")
 
