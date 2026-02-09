@@ -988,53 +988,8 @@ def build_inputs(df, risk_groups, mode, calculation_done_state=False):
         return min_val, max_val, start_val
 
     user_inputs = {}
-    if mode == "Слайдеры":
-        for group in risk_groups:
-            group_name_ru = get_system_name_ru(group)
-            st.sidebar.markdown(f"## {group_name_ru}")
-            desc = get_system_description_from_df(df, group)
-            if desc:
-                st.sidebar.caption(desc)
-            g_df = df[df['Risk_Group'] == group]
-            for _, row in g_df.iterrows():
-                f_id, f_name = row['factor_id'], row['factor_name']
-                u_type, u_name = str(row['unit_type']).strip(), str(row.get('unit_name', ''))
-                label = f"{f_name}, {u_name}" if u_name else f_name
-                if "range" in u_type:
-                    _, _, start_val = clamp_start(row)
-                    slider_key = f"s_{f_id}"
-                    # Если есть значение в session_state (установлено из OCR), используем его
-                    if slider_key in st.session_state:
-                        start_val = float(st.session_state[slider_key])
-                    # Иначе проверяем test_answers (для режима "Тест")
-                    elif "test_answers" in st.session_state and f_id in st.session_state.test_answers:
-                        ocr_val = st.session_state.test_answers[f_id]
-                        # Ограничиваем значение диапазоном слайдера
-                        min_val = float(row['min_val'])
-                        max_val = float(row['max_val'])
-                        start_val = max(min_val, min(max_val, float(ocr_val)))
-                    val = st.sidebar.slider(
-                        label,
-                        float(row['min_val']),
-                        float(row['max_val']),
-                        start_val,
-                        step=0.1,
-                        key=slider_key,
-                    )
-                    user_inputs[f_id] = calculate_risk(
-                        val,
-                        row['min_val'],
-                        row['max_val'],
-                        row['norm_min'],
-                        row['norm_max'],
-                        u_type,
-                    )
-                elif u_type == "select":
-                    options = {"Норма": 5.0, "Умеренно": 3.0, "Критично": 1.0}
-                    choice = st.sidebar.selectbox(label, list(options.keys()), key=f"sel_{f_id}")
-                    user_inputs[f_id] = options[choice]
-    else:
-        # В режиме "Тест"
+    # Режим "Тест" - единственный доступный режим
+    if mode == "Тест":
         if calculation_done_state:
             # Если расчет уже выполнен (перезагрузка страницы после расчета), просто формируем user_inputs
             # без отображения UI теста.
@@ -1088,14 +1043,31 @@ def build_inputs(df, risk_groups, mode, calculation_done_state=False):
                 help_text = None
                 if pd.notna(row.get('norm_min')) and pd.notna(row.get('norm_max')):
                     help_text = f"Норма: {row['norm_min']}–{row['norm_max']}"
-                stored_val = st.session_state.test_answers.get(f_id, start_val)
+                # Приоритет: сначала проверяем temp_{f_id} (значение из OCR, установленное напрямую)
+                # Затем test_answers, затем значение по умолчанию
+                temp_key = f"temp_{f_id}"
+                stored_val = start_val
+                
+                # Проверяем temp_{f_id} (значение из OCR, установленное напрямую)
+                if temp_key in st.session_state:
+                    temp_val = st.session_state[temp_key]
+                    if isinstance(temp_val, (int, float)):
+                        stored_val = max(min_val, min(max_val, float(temp_val)))
+                # Проверяем test_answers (fallback)
+                elif "test_answers" in st.session_state and f_id in st.session_state.test_answers:
+                    ocr_val = st.session_state.test_answers[f_id]
+                    if isinstance(ocr_val, (int, float)):
+                        stored_val = max(min_val, min(max_val, float(ocr_val)))
+                        # Также устанавливаем в temp_key для следующего rerun
+                        st.session_state[temp_key] = stored_val
+                
                 st.number_input(
                     label,
                     min_value=min_val,
                     max_value=max_val,
                     value=stored_val,
                     step=0.1,
-                    key=f"temp_{f_id}",
+                    key=temp_key,
                     help=help_text,
                 )
             elif u_type == "select":
@@ -1185,7 +1157,8 @@ if df is not None and not df.empty:
     
     # Исключаем Oxidative из расчета
     risk_groups = sorted([g for g in df['Risk_Group'].unique() if g and pd.notna(g) and g != 'Oxidative'])
-    input_mode = st.sidebar.radio("Режим ввода", ["Тест (по порядку)", "Слайдеры"], index=0)
+    # Режим ввода: только "Тест (по порядку)"
+    input_mode = "Тест (по порядку)"
 
     # --- Загрузить бланк (OCR) ---
     if OCR_AVAILABLE:
@@ -1201,7 +1174,7 @@ if df is not None and not df.empty:
         ocr_auth = yandex_key.strip() or yandex_iam.strip()
         
         st.sidebar.caption("Распознавание: **Yandex Vision** (облако)")
-        st.sidebar.caption("Распознавание показателей с фото/скана или PDF (первая страница).")
+        st.sidebar.caption("Распознавание показателей с фото/скана или PDF (все страницы).")
         ocr_can_run = bool(ocr_auth)
         
         # Диагностика для отладки
@@ -1215,18 +1188,60 @@ if df is not None and not df.empty:
         ocr_upload = st.sidebar.file_uploader("Фото, скан или PDF", type=["png", "jpg", "jpeg", "pdf"], key="ocr_upload")
         ocr_recognize = st.sidebar.button("🔍 Распознать", key="ocr_recognize", help="Лучше работает со сканом или чётким фото")
         if ocr_recognize and ocr_upload and ocr_can_run:
-            with st.spinner("Распознавание..."):
-                raw_bytes = ocr_upload.getvalue()
-                is_pdf = (ocr_upload.type or "").strip().lower() == "application/pdf" or (ocr_upload.name or "").lower().endswith(".pdf")
-                if is_pdf:
-                    from ocr_vision import pdf_to_image_bytes
-                    img_bytes, pdf_err = pdf_to_image_bytes(raw_bytes, page_index=0)
-                    if pdf_err:
-                        st.sidebar.error(pdf_err)
-                        img_bytes = None
+            raw_bytes = ocr_upload.getvalue()
+            is_pdf = (ocr_upload.type or "").strip().lower() == "application/pdf" or (ocr_upload.name or "").lower().endswith(".pdf")
+            
+            if is_pdf:
+                # Обработка PDF: все страницы
+                from ocr_vision import pdf_to_all_images, pdf_get_page_count
+                page_count, count_err = pdf_get_page_count(raw_bytes)
+                if count_err:
+                    st.sidebar.error(f"Ошибка чтения PDF: {count_err}")
+                elif page_count is None or page_count == 0:
+                    st.sidebar.error("PDF не содержит страниц")
                 else:
+                    with st.spinner(f"Распознавание PDF ({page_count} страниц)..."):
+                        all_images, pdf_err = pdf_to_all_images(raw_bytes)
+                        if pdf_err:
+                            st.sidebar.error(pdf_err)
+                        elif all_images:
+                            # При API-ключе folder_id не передаём (избегаем ошибки прав доступа)
+                            folder_for_request = (yandex_folder_id or None) if yandex_iam else None
+                            
+                            # Обрабатываем все страницы и объединяем результаты
+                            all_raw_texts = []
+                            all_parsed = []
+                            all_extracted = {}
+                            
+                            for page_num, img_bytes in enumerate(all_images, 1):
+                                raw_text, err = yandex_vision_ocr(
+                                    img_bytes,
+                                    api_key=yandex_key or None,
+                                    iam_token=yandex_iam or None,
+                                    folder_id=folder_for_request,
+                                )
+                                if err:
+                                    st.sidebar.warning(f"Ошибка на странице {page_num}: {err}")
+                                else:
+                                    if raw_text:
+                                        all_raw_texts.append(f"=== Страница {page_num} ===\n{raw_text}")
+                                        parsed = parse_lab_text(raw_text)
+                                        all_parsed.extend(parsed)
+                                        # Объединяем extracted, при конфликтах берем последнее значение
+                                        page_extracted = map_to_factors(parsed, df)
+                                        all_extracted.update(page_extracted)
+                            
+                            # Сохраняем объединенные результаты
+                            combined_text = "\n\n".join(all_raw_texts)
+                            st.session_state.ocr_extracted = all_extracted
+                            st.session_state.ocr_parsed = all_parsed
+                            st.session_state.ocr_raw_text = combined_text
+                            st.session_state.ocr_show_modal = True
+                            st.rerun()
+            else:
+                # Обработка изображения (фото/скан)
+                with st.spinner("Распознавание..."):
                     img_bytes = raw_bytes
-                if img_bytes is not None:
                     # При API-ключе folder_id не передаём (избегаем ошибки прав доступа)
                     folder_for_request = (yandex_folder_id or None) if yandex_iam else None
                     raw_text, err = yandex_vision_ocr(
@@ -1289,29 +1304,58 @@ if df is not None and not df.empty:
                         st.session_state.test_answers = {}
                     # Применяем все распознанные значения из OCR
                     applied_count = 0
+                    applied_factors = []
                     for f_id, ocr_value in ocr_extracted.items():
-                        # Находим все строки с этим factor_id (может быть в разных группах)
+                        # Находим все строки с этим factor_id (может быть в разных группах рисков)
                         matching_rows = dataframe[dataframe["factor_id"] == f_id]
                         if not matching_rows.empty:
-                            for _, row in matching_rows.iterrows():
-                                u_type = str(row.get("unit_type", "")).strip()
-                                if "range" in u_type:
-                                    # Сохраняем в test_answers для режима "Тест"
-                                    st.session_state.test_answers[f_id] = ocr_value
-                                    # Сохраняем напрямую в session_state с ключом слайдера для режима "Слайдеры"
-                                    slider_key = f"s_{f_id}"
-                                    # Ограничиваем значение диапазоном
-                                    min_val = float(row.get("min_val", 0))
-                                    max_val = float(row.get("max_val", 1e9))
-                                    clamped_val = max(min_val, min(max_val, float(ocr_value)))
-                                    st.session_state[slider_key] = clamped_val
-                                    applied_count += 1
-                                    break  # Один factor_id = одно значение, даже если в нескольких группах
+                            # Проверяем, есть ли хотя бы одна строка с типом "range"
+                            range_rows = matching_rows[matching_rows['unit_type'].str.contains('range', na=False, case=False)]
+                            if not range_rows.empty:
+                                # Сохраняем в test_answers для режима "Тест"
+                                # Используем диапазон из первой найденной строки для ограничения значения
+                                first_row = range_rows.iloc[0]
+                                min_val = float(first_row.get("min_val", 0))
+                                max_val = float(first_row.get("max_val", 1e9))
+                                clamped_val = max(min_val, min(max_val, float(ocr_value)))
+                                
+                                # Сохраняем ограниченное значение в test_answers
+                                st.session_state.test_answers[f_id] = clamped_val
+                                
+                                # Устанавливаем значение в ключ виджета temp_{f_id} только если его там еще нет
+                                # Это позволяет избежать предупреждения Streamlit о конфликте значений
+                                # При следующем rerun виджет получит значение из test_answers через fallback логику
+                                temp_key = f"temp_{f_id}"
+                                # Удаляем старое значение, если оно есть, чтобы виджет пересоздался с новым значением
+                                if temp_key in st.session_state:
+                                    del st.session_state[temp_key]
+                                
+                                # Добавляем информацию о всех группах, где используется этот factor_id
+                                groups = range_rows['Risk_Group'].unique().tolist()
+                                groups_str = ", ".join(groups) if groups else "?"
+                                applied_factors.append(f"{first_row.get('factor_name', f_id)} ({f_id}) в группах [{groups_str}] = {clamped_val}")
+                                applied_count += 1
                     st.session_state.calculation_done = False
                     if applied_count > 0:
-                        st.success(f"✅ Добавлено {applied_count} показателей в расчёт. Значения подставлены в поля ввода.")
+                        # Формируем список названий показателей для уведомления
+                        factor_names = []
+                        for factor_info in applied_factors:
+                            # Извлекаем название показателя из строки вида "Название (ID) в группах [...] = значение"
+                            if "(" in factor_info:
+                                name_part = factor_info.split("(")[0].strip()
+                                factor_names.append(name_part)
+                        
+                        # Сохраняем сообщение в session_state для отображения после rerun
+                        if len(factor_names) == 1:
+                            st.session_state.ocr_success_message = f"✅ Значение подставлено: **{factor_names[0]}**"
+                        elif len(factor_names) <= 3:
+                            names_str = ", ".join(f"**{name}**" for name in factor_names)
+                            st.session_state.ocr_success_message = f"✅ Значения подставлены: {names_str}"
+                        else:
+                            st.session_state.ocr_success_message = f"✅ Подставлено **{applied_count}** показателей в расчёт."
                     else:
-                        st.warning("⚠️ Не удалось подставить значения. Проверьте, что распознанные показатели есть в базе данных.")
+                        st.session_state.ocr_warning_message = "⚠️ Не удалось подставить значения. Проверьте, что распознанные показатели есть в базе данных."
+                    # Закрываем диалог и делаем rerun
                     for key in ("ocr_extracted", "ocr_parsed", "ocr_raw_text", "ocr_show_modal"):
                         if key in st.session_state:
                             del st.session_state[key]
@@ -1323,9 +1367,17 @@ if df is not None and not df.empty:
                     st.rerun()
 
             show_ocr_dialog(df)
+        
+        # Показываем уведомление о подстановке значений после закрытия диалога
+        if "ocr_success_message" in st.session_state:
+            st.success(st.session_state.ocr_success_message)
+            del st.session_state.ocr_success_message
+        if "ocr_warning_message" in st.session_state:
+            st.warning(st.session_state.ocr_warning_message)
+            del st.session_state.ocr_warning_message
 
     # Для тестирования: сразу перейти к результатам с значениями по умолчанию (без прохода по 12 шагам)
-    if input_mode == "Тест (по порядку)" and not st.session_state.get("calculation_done", False):
+    if not st.session_state.get("calculation_done", False):
         if st.sidebar.button("⚡ Перейти к результатам (значения по умолчанию)", help="Заполняет все показатели серединой нормы и запускает расчёт"):
             defaults = {}
             for _, row in df.iterrows():
@@ -1345,7 +1397,7 @@ if df is not None and not df.empty:
             st.session_state.test_step = max(len(risk_groups), 1) - 1
             st.rerun()
 
-    user_inputs = build_inputs(df, risk_groups, "Слайдеры" if input_mode == "Слайдеры" else "Тест", st.session_state.get("calculation_done", False))
+    user_inputs = build_inputs(df, risk_groups, "Тест", st.session_state.get("calculation_done", False))
 
     # Инициализация session state для результатов расчета
     if "calculation_done" not in st.session_state:
@@ -1357,17 +1409,11 @@ if df is not None and not df.empty:
     if "warning" not in st.session_state:
         st.session_state.warning = None
 
-    # Кнопка расчета только для режима "Слайдеры" (в сайдбаре)
-    # В режиме "Тест" расчет запускается автоматически после нажатия "Рассчитать" в навигации
+    # В режиме "Тест" расчёт запускаем только один раз: когда пользователь нажал «Рассчитать» (test_done),
+    # но расчёт ещё не выполнялся (иначе после rerun снова бы запускался расчёт и цикл rerun).
     calculate_button = False
-    if input_mode == "Слайдеры":
-        st.sidebar.markdown("---")
-        calculate_button = st.sidebar.button("🔢 Рассчитать", type="primary", use_container_width=True)
-    elif input_mode == "Тест (по порядку)":
-        # В режиме "Тест" расчёт запускаем только один раз: когда пользователь нажал «Рассчитать» (test_done),
-        # но расчёт ещё не выполнялся (иначе после rerun снова бы запускался расчёт и цикл rerun).
-        if st.session_state.get("test_done", False) and not st.session_state.get("calculation_done", False):
-            calculate_button = True
+    if st.session_state.get("test_done", False) and not st.session_state.get("calculation_done", False):
+        calculate_button = True
     
     if calculate_button:
         # --- АДАПТИВНЫЙ РАСЧЕТ ---
@@ -1434,17 +1480,16 @@ if df is not None and not df.empty:
         </div>
     """, unsafe_allow_html=True)
 
-    # Кнопка перезапуска теста (в режиме «Тест» — сброс шагов и расчёта)
-    if input_mode == "Тест (по порядку)":
-        if st.button("🔄 Начать сначала", type="secondary"):
-            st.session_state.test_step = 0
-            st.session_state.test_done = False
-            st.session_state.test_answers = {}
-            st.session_state.calculation_done = False
-            st.session_state.group_scores = {}
-            st.session_state.final_score = None
-            st.session_state.warning = None
-            st.rerun()
+    # Кнопка перезапуска теста
+    if st.button("🔄 Начать сначала", type="secondary"):
+        st.session_state.test_step = 0
+        st.session_state.test_done = False
+        st.session_state.test_answers = {}
+        st.session_state.calculation_done = False
+        st.session_state.group_scores = {}
+        st.session_state.final_score = None
+        st.session_state.warning = None
+        st.rerun()
 
     # Оценка по системам: проекция на человека (12 групп рисков со сносками к телу)
     if group_scores:

@@ -19,6 +19,24 @@ except ImportError:
     PDF_AVAILABLE = False
 
 
+def pdf_get_page_count(pdf_bytes: bytes) -> tuple[int | None, str | None]:
+    """
+    Возвращает количество страниц в PDF.
+    Возвращает (page_count, None) при успехе или (None, error_message).
+    """
+    if not PDF_AVAILABLE:
+        return None, "Для распознавания PDF установите пакет: pip install pymupdf"
+    if not pdf_bytes:
+        return None, "Файл PDF пустой"
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        page_count = len(doc)
+        doc.close()
+        return page_count, None
+    except Exception as e:
+        return None, f"Ошибка чтения PDF: {e}"
+
+
 def pdf_to_image_bytes(pdf_bytes: bytes, page_index: int = 0, dpi: int = 150) -> tuple[bytes | None, str | None]:
     """
     Конвертирует одну страницу PDF в PNG (bytes).
@@ -40,6 +58,30 @@ def pdf_to_image_bytes(pdf_bytes: bytes, page_index: int = 0, dpi: int = 150) ->
         png_bytes = pix.tobytes("png")
         doc.close()
         return png_bytes, None
+    except Exception as e:
+        return None, f"Ошибка чтения PDF: {e}"
+
+
+def pdf_to_all_images(pdf_bytes: bytes, dpi: int = 150) -> tuple[list[bytes] | None, str | None]:
+    """
+    Конвертирует все страницы PDF в список PNG (bytes).
+    Возвращает (list_of_png_bytes, None) при успехе или (None, error_message).
+    """
+    if not PDF_AVAILABLE:
+        return None, "Для распознавания PDF установите пакет: pip install pymupdf"
+    if not pdf_bytes:
+        return None, "Файл PDF пустой"
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        images = []
+        for page_index in range(len(doc)):
+            page = doc.load_page(page_index)
+            mat = fitz.Matrix(dpi / 72, dpi / 72)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            png_bytes = pix.tobytes("png")
+            images.append(png_bytes)
+        doc.close()
+        return images, None
     except Exception as e:
         return None, f"Ошибка чтения PDF: {e}"
 
@@ -174,6 +216,8 @@ def _normalize_ocr_line(line: str) -> str:
     """Убирает типичный шум OCR: лишние пробелы, звёздочки, заменяет запятую на точку в числах."""
     line = re.sub(r"\s+", " ", line).strip()
     line = re.sub(r"\*+", "", line)
+    # Нормализуем различные тире и дефисы
+    line = re.sub(r"[\u2013\u2014\u2015]", "-", line)
     return line
 
 
@@ -187,7 +231,12 @@ def parse_lab_text(raw_text: str) -> list[dict]:
         return []
 
     out = []
-    num_pattern = r"([<>]?\s*)(\d+[,.]?\d*)"
+    # Улучшенный паттерн для чисел: поддерживает запятую и точку как разделитель
+    # Число: не считаем частью диапазона (не берём число, за которым сразу идёт "- число")
+    num_pattern = r"([<>≤≥]?\s*)(\d+[,.]?\d*)"
+    num_standalone = re.compile(r"(?<!\d)(\d+[,.]?\d*)(?=\s*(?:[а-яА-Яa-zA-Z/%]|$))")  # число перед единицей или концом
+    num_in_range = re.compile(r"(\d+[,.]?\d*)\s*[\-–—]\s*\d+[,.]?\d*")  # число как начало диапазона "X-Y"
+    # Более гибкий паттерн для единиц измерения
     unit_suffix = r"\s*([а-яА-Яa-zA-Z0-9/%²³°·\s\-]+)?$"
 
     def normalize_num(s: str) -> float:
@@ -198,40 +247,120 @@ def parse_lab_text(raw_text: str) -> list[dict]:
             return 0.0
 
     def clean_name(s: str) -> str:
-        return re.sub(r"\s+", " ", s).strip() if s else ""
+        # Убираем лишние пробелы и нормализуем
+        s = re.sub(r"\s+", " ", s).strip()
+        # Убираем лишние символы в начале/конце названия
+        s = re.sub(r"^[^\wа-яА-Я]+|[^\wа-яА-Я]+$", "", s)
+        return s
 
     def clean_unit(s: str) -> str:
         return s.strip() if s else ""
 
-    # Паттерны: название + разделитель + число + единица
-    # num_pattern даёт группы: (<> опционально), (число)
+    def is_valid_lab_name(name: str) -> bool:
+        """Проверяет, что название похоже на название лабораторного показателя"""
+        if len(name) < 2:
+            return False
+        if name.isdigit():
+            return False
+        # Исключаем слишком короткие или неинформативные названия
+        if len(name) < 3 and not any(c.isalpha() for c in name):
+            return False
+        # Исключаем названия, состоящие только из цифр и символов
+        if not any(c.isalpha() for c in name):
+            return False
+        return True
+
+    # Расширенный набор паттернов для различных форматов бланков
     patterns = [
-        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s*[:]\s*" + num_pattern + r"\s*" + unit_suffix, re.UNICODE),
-        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s+[\-–—]\s*" + num_pattern + r"\s*" + unit_suffix, re.UNICODE),
-        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s+" + num_pattern + r"\s*" + unit_suffix, re.UNICODE),
+        # Формат: "Название: значение единица" или "Название : значение единица"
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s*[:]\s*" + num_pattern + r"\s*" + unit_suffix, re.UNICODE | re.IGNORECASE),
+        # Формат: "Название - значение единица" или "Название — значение единица"
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s+[\-–—]\s*" + num_pattern + r"\s*" + unit_suffix, re.UNICODE | re.IGNORECASE),
+        # Формат: "Название значение единица" (без разделителя, но с пробелом)
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s+" + num_pattern + r"\s*" + unit_suffix, re.UNICODE | re.IGNORECASE),
+        # Формат: "Название (значение) единица"
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s*\(\s*" + num_pattern + r"\s*\)\s*" + unit_suffix, re.UNICODE | re.IGNORECASE),
+        # Формат: "Название значение" (без единицы, но с числом в конце строки)
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s+" + num_pattern + r"(?:\s|$)", re.UNICODE | re.IGNORECASE),
+        # Формат таблицы: "Название | значение | единица" или "Название\tзначение\tединица"
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s*[|\t]\s*" + num_pattern + r"\s*[|\t]?\s*" + unit_suffix, re.UNICODE | re.IGNORECASE),
+        # Формат: "Название = значение единица"
+        re.compile(r"([а-яА-Яa-zA-Z0-9\s\-\(\)/]+?)\s*=\s*" + num_pattern + r"\s*" + unit_suffix, re.UNICODE | re.IGNORECASE),
     ]
 
+    # Строка выглядит как "значение единица" (начинается с числа) — не используем как название
+    def line_looks_like_value_unit(s: str) -> bool:
+        return bool(re.match(r"^\s*[<>]?\s*\d+[,.]?\d*", s))
+
+    # Строка выглядит как название (не начинается с числа)
+    def line_looks_like_name(s: str) -> bool:
+        return bool(s) and not re.match(r"^\s*[<>]?\s*\d", s)
+
     seen = set()
-    for line in raw_text.splitlines():
-        line = _normalize_ocr_line(line)
-        if not line or len(line) < 4:
-            continue
+    lines_processed = 0
+    matches_found = 0
+    raw_lines = [_normalize_ocr_line(l) for l in raw_text.splitlines() if _normalize_ocr_line(l)]
+
+    def pick_result_number(text: str, name_end_pos: int) -> str | None:
+        """Из строки после названия выбираем число-результат, а не референс (не из диапазона X-Y)."""
+        after_name = text[name_end_pos:].strip()
+        # Все отдельные числа после названия
+        candidates = num_standalone.findall(after_name)
+        range_starts = num_in_range.findall(after_name)
+        for c in candidates:
+            if c not in range_starts:
+                return c
+        return candidates[0] if candidates else None
+
+    def try_match(text: str) -> bool:
+        nonlocal matches_found
         for pattern in patterns:
-            m = pattern.search(line)
+            m = pattern.search(text)
             if m:
                 name = clean_name(m.group(1))
-                val_str = m.group(3)  # число из num_pattern (вторая скобка)
+                val_str = m.group(3)
                 unit = clean_unit(m.group(4)) if m.lastindex >= 4 and m.group(4) else ""
-                if len(name) < 2 or name.isdigit():
+                # Если после названия есть несколько чисел (результат и референс), предпочитаем не из диапазона
+                name_end = m.end(1)
+                alt_num = pick_result_number(text, name_end)
+                if alt_num and alt_num != val_str:
+                    val_str = alt_num
+                if not is_valid_lab_name(name):
                     continue
                 value = normalize_num(val_str)
                 key = (name.lower(), round(value, 4))
                 if key in seen:
-                    continue
+                    return True
                 seen.add(key)
                 out.append({"name": name, "value": value, "unit": unit})
-                break
+                matches_found += 1
+                print(f"OCR parse: '{name}' = {val_str} -> {value} {unit}")
+                return True
+        return False
 
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        if len(line) < 2:
+            i += 1
+            continue
+        lines_processed += 1
+        matched = try_match(line)
+
+        # Объединяем только когда текущая строка — название, следующая — значение с единицей.
+        # Так не привязываем значение от одного показателя к названию следующего.
+        if not matched and i + 1 < len(raw_lines):
+            next_line = raw_lines[i + 1]
+            if line_looks_like_name(line) and line_looks_like_value_unit(next_line):
+                combined = line + " " + next_line
+                if try_match(combined):
+                    matched = True
+                    i += 1
+        if not matched and len(line) > 10:
+            print(f"OCR parse (не распознано): '{line[:80]}...'")
+        i += 1
+
+    print(f"OCR parse summary: обработано строк {lines_processed}, найдено показателей {matches_found}")
     return out
 
 
@@ -270,15 +399,35 @@ def _build_synonym_map(df):
         "креатинин": "R001",
         "creatinine": "R001",
         "crea": "R001",
-        "ттг": "H001",
-        "tsh": "H001",
-        "тиреотропный": "H001",
-        "т4": "H002",
-        "t4": "H002",
-        "тироксин": "H002",
-        "ат-тпо": "H003",
-        "аттпо": "H003",
-        "антитела тпо": "H003",
+        "креатинин (сыворотка)": "R001",
+        "креатинин сыворотка": "R001",
+        # ТТГ (тиреотропный гормон) -> tsh_level
+        "ттг": "tsh_level",
+        "tsh": "tsh_level",
+        "тиреотропный": "tsh_level",
+        "тиреотропный гормон": "tsh_level",
+        # Т4 свободный (тироксин свободный) -> t4_free
+        "т4": "t4_free",
+        "t4": "t4_free",
+        "тироксин": "t4_free",
+        "т4 свободный": "t4_free",
+        "тироксин свободный": "t4_free",
+        "free t4": "t4_free",
+        "ft4": "t4_free",
+        # АСТ (Аспартатаминотрансфераза) -> H002
+        "аст": "H002",
+        "ast": "H002",
+        "асат": "H002",
+        "аспартатаминотрансфераза": "H002",
+        "аспартатаминотрансфераза (аст)": "H002",
+        "аст (аспартатаминотрансфераза)": "H002",
+        # АТ-ТПО -> at_tpo
+        "ат-тпо": "at_tpo",
+        "аттпо": "at_tpo",
+        "антитела тпо": "at_tpo",
+        "антитела к тиреопероксидазе": "at_tpo",
+        "anti-tpo": "at_tpo",
+        "atpo": "at_tpo",
         "холестерин": "C002",
         "холестерин общий": "C002",
         "липидограмма (общий холестерин)": "C002",
@@ -286,6 +435,12 @@ def _build_synonym_map(df):
         "cholesterol": "C002",
         "общий белок": "H008",
         "белок общий": "H008",
+        "белок": "H008",
+        "total protein": "H008",
+        "protein": "H008",
+        "протеин": "H008",
+        "общий белок (сыворотка)": "H008",
+        "белок общий (сыворотка)": "H008",
         "срб": "F001",
         "срб (с-реактивный белок)": "F001",
         "с-реактивный белок": "F001",
@@ -299,17 +454,29 @@ def _build_synonym_map(df):
         "с-реактивный": "F001",
         "триглицериды": "H010",
         "триглицериды общие": "H010",
-        "алт": "HP001",
-        "alt": "HP001",
-        "алат": "HP001",
-        "аланинаминотрансфераза": "HP001",
-        "аст": "HP002",
-        "ast": "HP002",
-        "асат": "HP002",
-        "аспартатаминотрансфераза": "HP002",
+        # АЛТ (Аланинаминотрансфераза) -> H001
+        "алт": "H001",
+        "alt": "H001",
+        "алат": "H001",
+        "аланинаминотрансфераза": "H001",
+        "аланинаминотрансфераза (алт)": "H001",
+        "алт (аланинаминотрансфераза)": "H001",
+        # Билирубин общий -> H003
         "билирубин общий": "H003",
         "билирубин": "H003",
+        "total bilirubin": "H003",
+        "bilirubin total": "H003",
+        "bilirubin": "H003",
+        "tbil": "H003",
+        "t-bil": "H003",
+        "билирубин общий (сыворотка)": "H003",
         "билирубин прямой": "H004",
+        "direct bilirubin": "H004",
+        "bilirubin direct": "H004",
+        "dbil": "H004",
+        "d-bil": "H004",
+        "прямой билирубин": "H004",
+        "билирубин прямой (сыворотка)": "H004",
         "ггт": "HP004",
         "ggt": "HP004",
         "гамма-гт": "HP004",
@@ -342,6 +509,34 @@ def _build_synonym_map(df):
         "фибриноген": "F002",
         "соэ": "F005",
         "скорость оседания": "F005",
+        # Калий
+        "калий": "C005",
+        "potassium": "C005",
+        "k+": "C005",
+        "k": "C005",
+        "калий (сыворотка)": "C005",
+        "калий сыворотка": "C005",
+        # Магний
+        "магний": "C006",
+        "magnesium": "C006",
+        "mg+": "C006",
+        "mg": "C006",
+        "магний (сыворотка)": "C006",
+        "магний сыворотка": "C006",
+        # Натрий
+        "натрий": "C004",
+        "sodium": "C004",
+        "na+": "C004",
+        "na": "C004",
+        "натрий (сыворотка)": "C004",
+        "натрий сыворотка": "C004",
+        # Хлор
+        "хлор": "C007",
+        "chloride": "C007",
+        "cl-": "C007",
+        "cl": "C007",
+        "хлор (сыворотка)": "C007",
+        "хлор сыворотка": "C007",
     }
     for k, v in manual.items():
         if k not in syn:
@@ -367,18 +562,23 @@ def map_to_factors(parsed: list[dict], df) -> dict:
     for item in parsed:
         name = (item.get("name") or "").strip().lower()
         name_norm = re.sub(r"\s+", " ", name)
+        # Используем исходное значение из OCR, без изменений
         value = item.get("value", 0)
         unit = (item.get("unit") or "").strip()
 
         fid = None
+        # Сначала проверяем точное совпадение
         if name_norm in synonym_dict:
             fid = synonym_dict[name_norm]
         else:
+            # Затем проверяем частичные совпадения (от длинных к коротким)
             for key, f in synonym_list:
                 if len(key) >= 2 and key in name_norm:
                     fid = f
                     break
         if not fid or fid not in factor_rows:
+            # Логирование для отладки: не найден factor_id
+            print(f"OCR mapping: '{name_norm}' -> не найден factor_id")
             continue
 
         row = factor_rows[fid]
@@ -386,7 +586,11 @@ def map_to_factors(parsed: list[dict], df) -> dict:
         max_val = float(row.get("max_val", 1e9))
         if min_val >= max_val:
             max_val = min_val + 1
+        # Ограничиваем значение диапазоном, но сохраняем исходное значение из OCR
         value_clamped = max(min_val, min(max_val, value))
+        # Логирование для отладки: успешный маппинг
+        print(f"OCR mapping: '{name_norm}' -> {fid} = {value} (clamped: {value_clamped})")
+        # Используем исходное значение, если оно в допустимом диапазоне
         result[fid] = value_clamped
 
     return result
