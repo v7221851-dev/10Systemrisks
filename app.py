@@ -1002,8 +1002,12 @@ def build_inputs(df, risk_groups, mode, calculation_done_state=False):
                 label = f"{f_name}, {u_name}" if u_name else f_name
                 if "range" in u_type:
                     _, _, start_val = clamp_start(row)
-                    # Если есть значение из OCR или теста, используем его
-                    if "test_answers" in st.session_state and f_id in st.session_state.test_answers:
+                    slider_key = f"s_{f_id}"
+                    # Если есть значение в session_state (установлено из OCR), используем его
+                    if slider_key in st.session_state:
+                        start_val = float(st.session_state[slider_key])
+                    # Иначе проверяем test_answers (для режима "Тест")
+                    elif "test_answers" in st.session_state and f_id in st.session_state.test_answers:
                         ocr_val = st.session_state.test_answers[f_id]
                         # Ограничиваем значение диапазоном слайдера
                         min_val = float(row['min_val'])
@@ -1015,7 +1019,7 @@ def build_inputs(df, risk_groups, mode, calculation_done_state=False):
                         float(row['max_val']),
                         start_val,
                         step=0.1,
-                        key=f"s_{f_id}",
+                        key=slider_key,
                     )
                     user_inputs[f_id] = calculate_risk(
                         val,
@@ -1292,7 +1296,15 @@ if df is not None and not df.empty:
                             for _, row in matching_rows.iterrows():
                                 u_type = str(row.get("unit_type", "")).strip()
                                 if "range" in u_type:
+                                    # Сохраняем в test_answers для режима "Тест"
                                     st.session_state.test_answers[f_id] = ocr_value
+                                    # Сохраняем напрямую в session_state с ключом слайдера для режима "Слайдеры"
+                                    slider_key = f"s_{f_id}"
+                                    # Ограничиваем значение диапазоном
+                                    min_val = float(row.get("min_val", 0))
+                                    max_val = float(row.get("max_val", 1e9))
+                                    clamped_val = max(min_val, min(max_val, float(ocr_value)))
+                                    st.session_state[slider_key] = clamped_val
                                     applied_count += 1
                                     break  # Один factor_id = одно значение, даже если в нескольких группах
                     st.session_state.calculation_done = False
