@@ -204,7 +204,14 @@ def get_data():
         client = gspread.authorize(creds)
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet("knowledge_db")
         df = pd.DataFrame(sheet.get_all_records())
-        num_cols = ['Weight_Coefficient', 'Threshold_High', 'min_val', 'max_val', 'norm_min', 'norm_max']
+        # Числовые колонки, включая пол-зависимые нормы (редактируются врачом в Google Sheets)
+        num_cols = [
+            'Weight_Coefficient', 'Threshold_High',
+            'min_val', 'max_val',
+            'norm_min', 'norm_max',
+            'norm_min_M', 'norm_max_M',
+            'norm_min_F', 'norm_max_F',
+        ]
         for col in num_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -416,33 +423,47 @@ def _body_projection_svg_html(system_names, group_scores, get_system_name_ru_fn)
     )
 
 
-# Референсы, зависящие от пола (factor_id -> пол -> (norm_min, norm_max))
-# Источники: NKF/KDOQI, WHO/IDF, лабораторные референсы для взрослых
-SEX_AGE_NORMS = {
-    "R001": {"M": (62.0, 106.0), "F": (53.0, 97.0)},   # Креатинин (мкмоль/л)
-    "MU004": {"M": (62.0, 106.0), "F": (53.0, 97.0)},  # Креатинин в группе мышц
-    "R004": {"M": (200.0, 420.0), "F": (140.0, 340.0)}, # Мочевая кислота (мкмоль/л)
-    "SK002": {"M": (30.0, 300.0), "F": (10.0, 150.0)},  # Ферритин (мкг/л)
-    "M005": {"M": (80.0, 94.0), "F": (70.0, 80.0)},    # Окружность талии (см), IDF
-}
-
 def apply_sex_age_norms(df, sex, age):
     """
     Возвращает копию df с подставленными norm_min, norm_max для показателей,
-    зависящих от пола (и при необходимости возраста). Без изменений, если sex не задан.
+    зависящих от пола (и при необходимости возраста).
+
+    Пол-зависимые нормы теперь хранятся в Google Sheets в колонках:
+    - norm_min_M, norm_max_M — нормы для мужчин
+    - norm_min_F, norm_max_F — нормы для женщин
+
+    Врач может редактировать эти значения напрямую в таблице.
+    Если для показателя нет пол-специфичных значений, используются базовые norm_min/norm_max.
     """
     if df is None or df.empty:
         return df
     if not sex or str(sex).strip() not in ("M", "F", "М", "Ж", "Мужской", "Женский"):
         return df.copy()
     sex_key = "M" if str(sex).strip() in ("M", "М", "Мужской") else "F"
+
     out = df.copy()
+    # Проверяем, есть ли в таблице пол-специфичные колонки
+    has_m_cols = "norm_min_M" in out.columns and "norm_max_M" in out.columns
+    has_f_cols = "norm_min_F" in out.columns and "norm_max_F" in out.columns
+    if not (has_m_cols or has_f_cols):
+        # В таблице нет пол-зависимых колонок — возвращаем без изменений
+        return out
+
+    if sex_key == "M" and has_m_cols:
+        min_col, max_col = "norm_min_M", "norm_max_M"
+    elif sex_key == "F" and has_f_cols:
+        min_col, max_col = "norm_min_F", "norm_max_F"
+    else:
+        # Для этого пола нет специальных колонок — используем базовые нормы
+        return out
+
     for idx, row in out.iterrows():
-        fid = row.get("factor_id")
-        if fid and fid in SEX_AGE_NORMS and sex_key in SEX_AGE_NORMS[fid]:
-            nmin, nmax = SEX_AGE_NORMS[fid][sex_key]
-            out.at[idx, "norm_min"] = nmin
-            out.at[idx, "norm_max"] = nmax
+        nmin = row.get(min_col)
+        nmax = row.get(max_col)
+        # Используем только непустые значения; если в ячейке пусто/NaN, остаётся базовая норма
+        if pd.notna(nmin) and pd.notna(nmax):
+            out.at[idx, "norm_min"] = float(nmin)
+            out.at[idx, "norm_max"] = float(nmax)
     return out
 
 def calculate_risk(val, v_min, v_max, n_min, n_max, u_type):
