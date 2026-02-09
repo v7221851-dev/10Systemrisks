@@ -1002,6 +1002,13 @@ def build_inputs(df, risk_groups, mode, calculation_done_state=False):
                 label = f"{f_name}, {u_name}" if u_name else f_name
                 if "range" in u_type:
                     _, _, start_val = clamp_start(row)
+                    # Если есть значение из OCR или теста, используем его
+                    if "test_answers" in st.session_state and f_id in st.session_state.test_answers:
+                        ocr_val = st.session_state.test_answers[f_id]
+                        # Ограничиваем значение диапазоном слайдера
+                        min_val = float(row['min_val'])
+                        max_val = float(row['max_val'])
+                        start_val = max(min_val, min(max_val, float(ocr_val)))
                     val = st.sidebar.slider(
                         label,
                         float(row['min_val']),
@@ -1264,7 +1271,11 @@ if df is not None and not df.empty:
                     if not r.empty:
                         name = r.iloc[0].get("factor_name", fid)
                         unit = r.iloc[0].get("unit_name", "")
-                        rows.append({"Показатель": name, "Значение": val, "Ед.": unit})
+                        group = r.iloc[0].get("Risk_Group", "")
+                        rows.append({"Показатель": name, "Значение": val, "Ед.": unit, "Группа": group, "factor_id": fid})
+                    else:
+                        # Показатель распознан, но не найден в базе
+                        rows.append({"Показатель": f"❌ Не найден ({fid})", "Значение": val, "Ед.": "", "Группа": "", "factor_id": fid})
                 if rows:
                     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
                 add_btn = st.button("✅ Добавить в расчёт", type="primary", key="ocr_popup_add")
@@ -1272,15 +1283,26 @@ if df is not None and not df.empty:
                 if add_btn:
                     if "test_answers" not in st.session_state:
                         st.session_state.test_answers = {}
-                    for _, row in dataframe.iterrows():
-                        f_id, u_type = row["factor_id"], str(row.get("unit_type", "")).strip()
-                        if f_id in ocr_extracted and "range" in u_type:
-                            st.session_state.test_answers[f_id] = ocr_extracted[f_id]
+                    # Применяем все распознанные значения из OCR
+                    applied_count = 0
+                    for f_id, ocr_value in ocr_extracted.items():
+                        # Находим все строки с этим factor_id (может быть в разных группах)
+                        matching_rows = dataframe[dataframe["factor_id"] == f_id]
+                        if not matching_rows.empty:
+                            for _, row in matching_rows.iterrows():
+                                u_type = str(row.get("unit_type", "")).strip()
+                                if "range" in u_type:
+                                    st.session_state.test_answers[f_id] = ocr_value
+                                    applied_count += 1
+                                    break  # Один factor_id = одно значение, даже если в нескольких группах
                     st.session_state.calculation_done = False
+                    if applied_count > 0:
+                        st.success(f"✅ Добавлено {applied_count} показателей в расчёт. Значения подставлены в поля ввода.")
+                    else:
+                        st.warning("⚠️ Не удалось подставить значения. Проверьте, что распознанные показатели есть в базе данных.")
                     for key in ("ocr_extracted", "ocr_parsed", "ocr_raw_text", "ocr_show_modal"):
                         if key in st.session_state:
                             del st.session_state[key]
-                    st.success("Добавлено в расчёт. Закройте окно или перейдите в «Тест (по порядку)» и нажмите «Рассчитать».")
                     st.rerun()
                 if close_btn:
                     for key in ("ocr_extracted", "ocr_parsed", "ocr_raw_text", "ocr_show_modal"):
