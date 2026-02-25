@@ -14,7 +14,7 @@ except ImportError:
     OCR_AVAILABLE = False
 
 # --- КОНФИГУРАЦИЯ ---
-st.set_page_config(page_title="Health Risk Advisor 10.0", page_icon="🏥", layout="wide")
+st.set_page_config(page_title="Health Risk Advisor 12.0", page_icon="🏥", layout="wide")
 
 # Стабильный масштаб: ограничение ширины основного блока на больших экранах для читаемости
 st.markdown(
@@ -215,6 +215,13 @@ def get_data():
         for col in num_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        # Нормализация весов по группам: в таблице может быть шкала 1000 = 1.0 — приводим к сумме 1.0 в каждой группе
+        if "Weight_Coefficient" in df.columns and "Risk_Group" in df.columns:
+            for group in df["Risk_Group"].dropna().unique():
+                mask = df["Risk_Group"] == group
+                total = df.loc[mask, "Weight_Coefficient"].sum()
+                if total > 0:
+                    df.loc[mask, "Weight_Coefficient"] = df.loc[mask, "Weight_Coefficient"] / total
         return df
     except FileNotFoundError as e:
         st.error(f"❌ Файл credentials не найден: {e}")
@@ -1140,7 +1147,6 @@ if df is not None and not df.empty:
         st.session_state.user_sex = None
     if "user_age" not in st.session_state:
         st.session_state.user_age = None
-    
     st.sidebar.markdown("### 👤 Базовые данные")
     user_sex = st.sidebar.radio("Пол", ["Не указан", "Мужской", "Женский"], index=0, key="input_sex")
     user_age = st.sidebar.number_input("Возраст (лет)", min_value=1, max_value=120, value=30, step=1, key="input_age")
@@ -1422,16 +1428,28 @@ if df is not None and not df.empty:
         
         for group in risk_groups:
             g_df = df[df['Risk_Group'] == group]
-            if not g_df.empty and has_sufficient_data(g_df, user_inputs, min_factors=2):
-                total_w = g_df['Weight_Coefficient'].sum()
-                # Теперь user_inputs содержит баллы 1-5, а не риски 0-1
-                raw_score = sum(user_inputs.get(r['factor_id'], 0) * r['Weight_Coefficient'] 
-                              for _, r in g_df.iterrows() 
-                              if user_inputs.get(r['factor_id'], 0) is not None)
-                if total_w > 0:
-                    # Средневзвешенный балл группы (1-5)
-                    group_scores[group] = raw_score / total_w
-                    available_groups.append(group)
+            if g_df.empty:
+                continue
+            # Для групп с одним фактором (Ocular/ВГД) достаточно 1 заполненного значения
+            min_required = min(2, len(g_df))
+            if not has_sufficient_data(g_df, user_inputs, min_factors=min_required):
+                continue
+            total_w = float(g_df['Weight_Coefficient'].sum())
+            raw_score = sum(
+                user_inputs.get(r['factor_id'], 0) * r['Weight_Coefficient']
+                for _, r in g_df.iterrows()
+                if user_inputs.get(r['factor_id']) is not None
+            )
+            # Если веса в таблице нулевые (например только один фактор с weight=0), считаем группу по одному фактору
+            if total_w <= 0 and len(g_df) == 1:
+                fid = g_df.iloc[0]['factor_id']
+                val = user_inputs.get(fid)
+                group_scores[group] = float(val) if val is not None else 0.0
+                available_groups.append(group)
+                continue
+            if total_w > 0:
+                group_scores[group] = raw_score / total_w
+                available_groups.append(group)
 
         # Адаптивный расчет итогового индекса
         final_score, warning = calculate_adaptive_score(group_scores, available_groups, min_groups=5)
@@ -1468,17 +1486,45 @@ if df is not None and not df.empty:
     else:
         brief = "Высокий риск системного отказа."
 
-    st.markdown("---")
-    percent_display = f"{percent:.0f}%" if percent is not None else "N/A"
-    st.markdown(f"""
-        <div style="background-color:{color}; padding:40px; border-radius:20px; text-align:center; color:white; border: 2px solid rgba(0,0,0,0.1);">
-            <p style="margin:0; font-size:18px; font-weight:bold; opacity:0.8;">ИНТЕГРАЛЬНЫЙ ИНДЕКС ЗДОРОВЬЯ</p>
-            <h1 style="margin:0; font-size:110px; line-height:1;">{percent_display}</h1>
-            <h2 style="margin:5px 0; letter-spacing:3px;">{zone_name}</h2>
-            <p style="font-size:20px; font-style:italic;">{brief}</p>
-            <p style="font-size:14px; opacity:0.8; margin-top:10px;">20–44% красная зона · 45–65% жёлтая зона · 66–100% зелёная зона</p>
-        </div>
-    """, unsafe_allow_html=True)
+    # Импортируем модуль мобильной версии
+    try:
+        from mobile_results import render_mobile_results
+        # Рендерим обе версии - CSS медиа-запросы автоматически выберут нужную
+        system_names_list = ['Neuro', 'Cardio', 'Hormone', 'Metabolic', 'Immune',
+                            'Renal', 'Hepatic', 'Musculoskeletal', 'Inflammatory', 'SkinHair',
+                            'Gastric', 'Ocular']
+        
+        # Рендерим мобильную версию (скрыта на десктопе через CSS)
+        render_mobile_results(
+            final_score, group_scores, system_names_list, get_system_name_ru,
+            brief, percent, color, zone_name
+        )
+        
+        # Десктопная версия (скрыта на мобильных через CSS)
+        st.markdown("---")
+        percent_display = f"{percent:.0f}%" if percent is not None else "N/A"
+        st.markdown(f"""
+            <div class="desktop-results" style="background-color:{color}; padding:40px; border-radius:20px; text-align:center; color:white; border: 2px solid rgba(0,0,0,0.1);">
+                <p style="margin:0; font-size:18px; font-weight:bold; opacity:0.8;">ИНТЕГРАЛЬНЫЙ ИНДЕКС ЗДОРОВЬЯ</p>
+                <h1 style="margin:0; font-size:110px; line-height:1;">{percent_display}</h1>
+                <h2 style="margin:5px 0; letter-spacing:3px;">{zone_name}</h2>
+                <p style="font-size:20px; font-style:italic;">{brief}</p>
+                <p style="font-size:14px; opacity:0.8; margin-top:10px;">20–44% красная зона · 45–65% жёлтая зона · 66–100% зелёная зона</p>
+            </div>
+        """, unsafe_allow_html=True)
+    except ImportError:
+        # Если модуль не найден, используем только десктопную версию
+        st.markdown("---")
+        percent_display = f"{percent:.0f}%" if percent is not None else "N/A"
+        st.markdown(f"""
+            <div style="background-color:{color}; padding:40px; border-radius:20px; text-align:center; color:white; border: 2px solid rgba(0,0,0,0.1);">
+                <p style="margin:0; font-size:18px; font-weight:bold; opacity:0.8;">ИНТЕГРАЛЬНЫЙ ИНДЕКС ЗДОРОВЬЯ</p>
+                <h1 style="margin:0; font-size:110px; line-height:1;">{percent_display}</h1>
+                <h2 style="margin:5px 0; letter-spacing:3px;">{zone_name}</h2>
+                <p style="font-size:20px; font-style:italic;">{brief}</p>
+                <p style="font-size:14px; opacity:0.8; margin-top:10px;">20–44% красная зона · 45–65% жёлтая зона · 66–100% зелёная зона</p>
+            </div>
+        """, unsafe_allow_html=True)
 
     # Кнопка перезапуска теста
     if st.button("🔄 Начать сначала", type="secondary"):
@@ -1599,85 +1645,80 @@ if df is not None and not df.empty:
                 st.session_state.health_context_sent = False
                 st.rerun()
     
-    # AI рекомендации (опционально, старый функционал)
+    # AI рекомендации: всегда показываются сразу после расчёта (без чекбокса)
     st.markdown("---")
-    ai_enabled = st.sidebar.checkbox("🤖 Получить AI рекомендации", value=False)
-    
-    if ai_enabled:
-        with st.spinner("Генерация персонализированных рекомендаций от AI..."):
-            ai_result = get_gigachat_recommendations(
-                user_inputs, group_scores, df,
-                user_sex=st.session_state.get("user_sex"),
-                user_age=st.session_state.get("user_age"),
-            )
-            
-            if isinstance(ai_result, tuple):
-                ai_recommendations, error_msg = ai_result
-            else:
-                ai_recommendations, error_msg = ai_result, None
-            
-            if ai_recommendations:
-                st.subheader("🤖 Персонализированные рекомендации")
-                st.markdown("""
-                <div style="background-color:#e8f4f8; padding:20px; border-radius:10px; border-left:4px solid #1f77b4;">
-                """, unsafe_allow_html=True)
-                st.markdown(ai_recommendations)
-                st.markdown("</div>", unsafe_allow_html=True)
-            else:
-                st.error(f"⚠️ {error_msg if error_msg else 'Не удалось получить рекомендации от AI'}")
-                with st.expander("ℹ️ Как настроить GigaChat API"):
-                    st.markdown("""
-                    **Для работы AI рекомендаций требуется:**
-                    
-                    1. **Self-hosted GigaChat сервер** (должен быть запущен и доступен)
-                    2. **API URL** - адрес вашего GigaChat сервера (например: `http://localhost:8000/v1/chat/completions`)
-                    3. **API Key** - ключ для авторизации
-                    
-                    **Настройка через Streamlit secrets:**
-                    - Создайте файл `.streamlit/secrets.toml` в корне проекта
-                    - Добавьте:
-                    ```toml
-                    GIGACHAT_API_URL = "http://ваш-сервер:порт/v1/chat/completions"
-                    GIGACHAT_API_KEY = "ваш-api-ключ"
-                    ```
-                    
-                    **Или через переменные окружения:**
-                    ```bash
-                    export GIGACHAT_API_URL="http://ваш-сервер:порт/v1/chat/completions"
-                    export GIGACHAT_API_KEY="ваш-api-ключ"
-                    ```
-                    
-                    **Без AI:** Приложение работает и без GigaChat - вы получите базовые рекомендации из базы данных.
-                    """)
-
-    st.markdown("---")
-    col_l, col_r = st.columns([1, 1])
-    with col_l:
-        st.subheader("📋 План коррекции")
-        low_score_count = 0
-        for _, row in df.iterrows():
-            factor_score = user_inputs.get(row['factor_id'], None)
-            # Теперь низкий балл (<= 2.5) означает проблему
-            if factor_score is not None and factor_score <= 2.5:
-                low_score_count += 1
-                with st.expander(f"📍 {row['factor_name']} (балл: {factor_score:.1f})", expanded=(low_score_count <= 3)):
-                    st.warning(row['recommendation'])
-        if low_score_count == 0:
-            st.success("Все показатели в пределах нормы!")
-    
-    with col_r:
-        st.subheader("💡 Анализ вклада факторов")
-        # Показываем факторы с низкими баллами (проблемные)
-        impact = {row['factor_name']: user_inputs.get(row['factor_id'], None)
-                 for _, row in df.iterrows() 
-                 if user_inputs.get(row['factor_id'], None) is not None}
-        if impact:
-            # Сортируем по возрастанию (худшие первыми)
-            impact_series = pd.Series(impact).sort_values(ascending=True).head(10)
-            st.bar_chart(impact_series)
-            st.caption("Факторы отсортированы от худших (низкий балл) к лучшим")
+    with st.spinner("Генерация персонализированных рекомендаций от AI..."):
+        ai_result = get_gigachat_recommendations(
+            user_inputs, group_scores, df,
+            user_sex=st.session_state.get("user_sex"),
+            user_age=st.session_state.get("user_age"),
+        )
+        
+        if isinstance(ai_result, tuple):
+            ai_recommendations, error_msg = ai_result
         else:
-            st.info("Нет данных для анализа")
+            ai_recommendations, error_msg = ai_result, None
+        
+        if ai_recommendations:
+            st.subheader("🤖 Персонализированные рекомендации")
+            st.markdown("""
+            <div style="background-color:#e8f4f8; padding:20px; border-radius:10px; border-left:4px solid #1f77b4;">
+            """, unsafe_allow_html=True)
+            st.markdown(ai_recommendations)
+            st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            st.error(f"⚠️ {error_msg if error_msg else 'Не удалось получить рекомендации от AI'}")
+            with st.expander("ℹ️ Как настроить GigaChat API"):
+                st.markdown("""
+                **Для работы AI рекомендаций требуется:**
+                
+                1. **Self-hosted GigaChat сервер** (должен быть запущен и доступен)
+                2. **API URL** - адрес вашего GigaChat сервера (например: `http://localhost:8000/v1/chat/completions`)
+                3. **API Key** - ключ для авторизации
+                
+                **Настройка через Streamlit secrets:**
+                - Создайте файл `.streamlit/secrets.toml` в корне проекта
+                - Добавьте:
+                ```toml
+                GIGACHAT_API_URL = "http://ваш-сервер:порт/v1/chat/completions"
+                GIGACHAT_API_KEY = "ваш-api-ключ"
+                ```
+                
+                **Или через переменные окружения:**
+                ```bash
+                export GIGACHAT_API_URL="http://ваш-сервер:порт/v1/chat/completions"
+                export GIGACHAT_API_KEY="ваш-api-ключ"
+                ```
+                
+                **Без AI:** Приложение работает и без GigaChat - вы получите базовые рекомендации из базы данных.
+                """)
+
+    # Блоки «План коррекции» и «Анализ вклада факторов» скрыты
+    if False:
+        st.markdown("---")
+        col_l, col_r = st.columns([1, 1])
+        with col_l:
+            st.subheader("📋 План коррекции")
+            low_score_count = 0
+            for _, row in df.iterrows():
+                factor_score = user_inputs.get(row['factor_id'], None)
+                if factor_score is not None and factor_score <= 2.5:
+                    low_score_count += 1
+                    with st.expander(f"📍 {row['factor_name']} (балл: {factor_score:.1f})", expanded=(low_score_count <= 3)):
+                        st.warning(row['recommendation'])
+            if low_score_count == 0:
+                st.success("Все показатели в пределах нормы!")
+        with col_r:
+            st.subheader("💡 Анализ вклада факторов")
+            impact = {row['factor_name']: user_inputs.get(row['factor_id'], None)
+                     for _, row in df.iterrows()
+                     if user_inputs.get(row['factor_id'], None) is not None}
+            if impact:
+                impact_series = pd.Series(impact).sort_values(ascending=True).head(10)
+                st.bar_chart(impact_series)
+                st.caption("Факторы отсортированы от худших (низкий балл) к лучшим")
+            else:
+                st.info("Нет данных для анализа")
 else:
     st.error("Не удалось загрузить данные. Проверьте подключение к Google Sheets и файл credentials.json.")
     st.info("Пожалуйста, убедитесь, что файл credentials.json существует и содержит корректные учетные данные Google API.")
