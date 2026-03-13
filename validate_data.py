@@ -126,8 +126,17 @@ def check_value_ranges(df: pd.DataFrame) -> List[str]:
     
     return issues
 
+def _normalize_weight_sum(raw_sum: float) -> float:
+    """В таблице веса могут быть в шкале 1000 = 1.0; приводим к 0..1 для проверки."""
+    if pd.isna(raw_sum):
+        return raw_sum
+    if raw_sum >= 10:
+        return raw_sum / 1000.0
+    return raw_sum
+
+
 def check_weights(df: pd.DataFrame) -> List[str]:
-    """Проверяет корректность весовых коэффициентов."""
+    """Проверяет корректность весовых коэффициентов (сумма по группе = 1.0; в таблице может быть 1000 = 1.0)."""
     issues = []
     
     # Проверка наличия весов
@@ -135,27 +144,28 @@ def check_weights(df: pd.DataFrame) -> List[str]:
         issues.append("❌ Колонка Weight_Coefficient отсутствует")
         return issues
     
-    # Проверка на отрицательные веса
+    # Проверка на отрицательные веса (уже в нормализованной шкале или сырой — отрицательное всё равно ошибка)
     negative_weights = df[df['Weight_Coefficient'] < 0]
     if len(negative_weights) > 0:
         issues.append(f"⚠️ Найдено {len(negative_weights)} факторов с отрицательными весами")
         for idx, row in negative_weights.iterrows():
             issues.append(f"   - {row.get('factor_name', 'Unknown')}: {row['Weight_Coefficient']}")
     
-    # Проверка весов по группам рисков
+    # Проверка весов по группам рисков (1000 в таблице = 1.0)
     risk_groups = df['Risk_Group'].dropna().unique()
     for group in risk_groups:
         group_df = df[df['Risk_Group'] == group]
-        total_weight = group_df['Weight_Coefficient'].sum()
+        total_raw = group_df['Weight_Coefficient'].sum()
+        total_norm = _normalize_weight_sum(total_raw)
         
-        if total_weight == 0:
+        if total_raw == 0:
             issues.append(f"⚠️ Группа '{group}': сумма весов равна 0")
-        elif total_weight < 0:
-            issues.append(f"❌ Группа '{group}': сумма весов отрицательная ({total_weight:.3f})")
+        elif total_raw < 0:
+            issues.append(f"❌ Группа '{group}': сумма весов отрицательная ({total_raw:.3f})")
         else:
-            # Проверка, нормализованы ли веса (сумма = 1)
-            if abs(total_weight - 1.0) > 0.01:
-                issues.append(f"ℹ️ Группа '{group}': сумма весов = {total_weight:.3f} (ожидается 1.0)")
+            # Проверка: после нормализации (1000→1.0) сумма должна быть 1.0
+            if abs(total_norm - 1.0) > 0.01:
+                issues.append(f"ℹ️ Группа '{group}': сумма весов = {total_norm:.3f} (ожидается 1.0, в таблице: {total_raw:.0f})")
     
     return issues
 
@@ -235,8 +245,9 @@ def check_group_distribution(df: pd.DataFrame) -> List[str]:
     for group in risk_groups:
         group_df = df[df['Risk_Group'] == group]
         count = len(group_df)
-        total_weight = group_df['Weight_Coefficient'].sum()
-        issues.append(f"   - {group}: {count} факторов, сумма весов: {total_weight:.3f}")
+        total_raw = group_df['Weight_Coefficient'].sum()
+        total_display = _normalize_weight_sum(total_raw)
+        issues.append(f"   - {group}: {count} факторов, сумма весов: {total_display:.3f}")
         
         # Проверка на пустые группы
         if count == 0:

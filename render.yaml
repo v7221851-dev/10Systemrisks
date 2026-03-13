@@ -1,0 +1,23 @@
+# Render Blueprint — MDSA Bio-Tech
+# https://dashboard.render.com/blueprints
+# Подключите репозиторий и создайте Blueprint Instance
+
+services:
+  - type: web
+    name: 10systemrisks
+    runtime: python
+    region: frankfurt
+
+    buildCommand: |
+      pip install -r api/requirements.txt
+      cd biotech-results && npm ci && npm run build
+
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      # Добавьте в Dashboard → Environment:
+      # GOOGLE_CREDENTIALS_JSON
+      # GIGACHAT_CLIENT_ID, GIGACHAT_CLIENT_SECRET (или GIGACHAT_API_KEY)
+      # YANDEX_VISION_API_KEY (для OCR)

@@ -987,7 +987,11 @@ def build_inputs(df, risk_groups, mode, calculation_done_state=False):
     def clamp_start(row):
         min_val = float(row['min_val'])
         max_val = float(row['max_val'])
-        start_val = float((row['norm_min'] + row['norm_max']) / 2)
+        n_min, n_max = float(row['norm_min']), float(row['norm_max'])
+        if n_min == n_max == 0:
+            start_val = (min_val + max_val) / 2.0 if max_val > min_val else min_val
+        else:
+            start_val = (n_min + n_max) / 2.0
         if start_val < min_val:
             start_val = min_val
         if start_val > max_val:
@@ -1065,8 +1069,8 @@ def build_inputs(df, risk_groups, mode, calculation_done_state=False):
                     ocr_val = st.session_state.test_answers[f_id]
                     if isinstance(ocr_val, (int, float)):
                         stored_val = max(min_val, min(max_val, float(ocr_val)))
-                        # Также устанавливаем в temp_key для следующего rerun
-                        st.session_state[temp_key] = stored_val
+                # Не задаём st.session_state[temp_key] здесь — иначе Streamlit выдаёт предупреждение
+                # о конфликте (виджет с value= и значение в Session State). Виджет сам запишет значение по key.
                 
                 st.number_input(
                     label,
@@ -1394,7 +1398,10 @@ if df is not None and not df.empty:
                     max_val = float(row.get("max_val", 1))
                     n_min = float(row.get("norm_min", 0))
                     n_max = float(row.get("norm_max", 1))
-                    mid = (n_min + n_max) / 2.0
+                    if n_min == n_max == 0 and max_val > min_val:
+                        mid = (min_val + max_val) / 2.0
+                    else:
+                        mid = (n_min + n_max) / 2.0
                     defaults[f_id] = max(min_val, min(max_val, mid))
                 elif u_type == "select":
                     defaults[f_id] = "Норма"

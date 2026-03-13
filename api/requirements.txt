@@ -1,2 +1,10 @@
-# Лендинг использует только стандартную библиотеку Python.
-# Корневой requirements.txt — для локального Streamlit.
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-dotenv>=1.0.0
+gspread>=5.0.0
+oauth2client>=4.1.0
+pandas>=1.5.0
+requests>=2.28.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+pymupdf>=1.23.0
